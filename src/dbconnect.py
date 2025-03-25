@@ -1,7 +1,6 @@
 import psycopg2
 from psycopg2.extras import DictCursor
-
-# from sqlalchemy import create_engine
+from sqlalchemy import create_engine
 
 from config import Config
 
@@ -9,11 +8,13 @@ from config import Config
 class DatabaseConnection:
     def __init__(self):
         self.connection_string = Config.SQLALCHEMY_DATABASE_URI
+        self.engine = None
         self.conn = None
         self.cur = None
 
     def __enter__(self):
         try:
+            self.engine = create_engine(self.connection_string)
             self.conn = psycopg2.connect(
                 host=Config.HOST_SERVER,
                 database=Config.PSYCOPG2_DATABASE,
@@ -31,4 +32,6 @@ class DatabaseConnection:
             self.cur.close()
         if self.conn:
             self.conn.close()
+        if self.engine:
+            self.engine.dispose()
         print("Database connection closed")

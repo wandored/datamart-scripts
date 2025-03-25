@@ -13,10 +13,11 @@ dependencies = [
     "icecream",
     "sqlalchemy",
     "json",
-    "icecream"
+    "jinja2",
+    "openpyxl"
 ]
 
 [project.scripts]
 
-[tool.setuptools.packages.find]
-where = "src"
+[tool.setuptools]
+packages = { find = { where = ["src"]}}

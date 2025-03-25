@@ -1,0 +1,22 @@
+[build-system]
+requires = [
+    "setuptools"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "datamart-scripts"
+version = "2025.0.0"
+dependencies = [
+    "pandas",
+    "psycopg2",
+    "icecream",
+    "sqlalchemy",
+    "json",
+    "icecream"
+]
+
+[project.scripts]
+
+[tool.setuptools.packages.find]
+where = "src"

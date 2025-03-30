@@ -123,15 +123,6 @@ def merge_dataframes(df1, df2):
                      corresponding recipe costs
     """
     return pd.merge(df1, df2, on=["menu_item", "location", "id", "concept"], how="left")
-    # pivot_table = pd.pivot_table(
-    #         df_merge,
-    #         index=["menu_item"],
-    #         columns=['location'],
-    #         values=['price', 'recipe_cost'],
-    #         aggfunc='mean',
-    # )
-
-    # return pivot_table
 
 
 def write_to_excel(df, file_name, item_type):

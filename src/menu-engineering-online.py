@@ -10,6 +10,12 @@ from psycopg2 import sql
 from psycopg2.errors import IntegrityError, UniqueViolation
 
 from dbconnect import DatabaseConnection
+from utils import (
+    recreate_stockcount_monthly_view,
+    recreate_stockcount_purchases_view,
+    recreate_stockcount_sales_view,
+    recreate_stockcount_waste_view,
+)
 
 
 def get_date(product_mix_csv):
@@ -318,3 +324,7 @@ if __name__ == "__main__":
             db.conn,
             db.cur,
         )
+        recreate_stockcount_sales_view(db.conn)
+        recreate_stockcount_waste_view(db.conn)
+        recreate_stockcount_purchases_view(db.conn)
+        recreate_stockcount_monthly_view(db.conn)

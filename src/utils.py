@@ -1,24 +1,4 @@
-# read UnitOfMeasure.csv file and upload to database
-
-import pandas as pd
-
-# import icecream as ic
-from psycopg2.errors import IntegrityError
-
 from dbconnect import DatabaseConnection
-
-
-# finds and returns the renamed items
-def findRenamed(old, new):
-    # merge both files on the uofm_id column
-    merged = pd.merge(old, new, on="uofm_id")
-
-    # rename for readability
-    merged.rename(columns={"name_x": "old_name", "name_y": "new_name"}, inplace=True)
-
-    # check for differences in the name column
-    diff = merged[merged["old_name"] != merged["new_name"]]
-    return diff
 
 
 def recreate_stockcount_sales_view(conn):
@@ -93,6 +73,7 @@ def recreate_stockcount_waste_view(conn):
         sc.week,
         sc.period,
         sc.year,
+        sc.id AS store_id,
         sc.store,
         sc.item,
         sc.uofm,
@@ -104,7 +85,7 @@ def recreate_stockcount_waste_view(conn):
          JOIN inv_items ii ON ii.item_name::text = sc.item
     WHERE (sc.item IN ( SELECT DISTINCT inv_items.item_name
                FROM inv_items)) AND sc.type = 'Waste Log'::text
-    GROUP BY sc.date, sc.dow, sc.week, sc.period, sc.year, sc.store, sc.item, sc.uofm, um.base_qty, um.base_uofm
+    GROUP BY sc.date, sc.dow, sc.week, sc.period, sc.year, sc.id, sc.store, sc.item, sc.uofm, um.base_qty, um.base_uofm
     ORDER BY sc.date DESC;
     """
 
@@ -118,24 +99,26 @@ def recreate_stockcount_waste_view(conn):
 def recreate_stockcount_purchases_view(conn):
     create_view_query = """
     CREATE OR REPLACE VIEW stockcount_purchases AS
-    SELECT sc.date,
-        sc.dow,
-        sc.week,
-        sc.period,
-        sc.year,
-        sc.store,
-        sc.item,
-        sc.uofm,
-        sum(sc.quantity) AS quantity,
-        um.base_uofm,
-        sum(sc.quantity) * um.base_qty AS base_qty
-    FROM stock_count sc
-         JOIN unitsofmeasure um ON um.name = sc.uofm
-         JOIN inv_items ii ON ii.item_name::text = sc.item
-    WHERE (sc.item IN ( SELECT DISTINCT inv_items.item_name
-               FROM inv_items)) AND sc.type = 'Purchase Log'::text
-    GROUP BY sc.date, sc.dow, sc.week, sc.period, sc.year, sc.store, sc.item, sc.uofm, um.base_qty, um.base_uofm
-    ORDER BY sc.date DESC;
+    SELECT p.date,
+        p.dow,
+        p.week,
+        p.period,
+        p.year,
+        p.id AS store_id,
+        p.store,
+        p.item,
+        p.quantity,
+        p.uofm,
+        um.base_qty * p.quantity / ic.weight_qty AS unit_count
+    FROM purchases p
+        JOIN transaction t ON t.transactionid = p.transactionid
+        JOIN unitsofmeasure um ON um.name = p.uofm
+        JOIN item_conversion ic ON ic.name = p.item
+        JOIN inv_items ii ON ii.item_name::text = ic.name
+    WHERE (ic.name IN ( SELECT DISTINCT inv_items.item_name
+            FROM inv_items)) AND p.date >= (CURRENT_DATE - '1 year'::interval) AND p.quantity > 0::double precision
+    GROUP BY p.transactionid, p.date, p.week, p.period, p.year, p.id, p.store, p.item, p.quantity, p.uofm, um.base_qty, ic.weight_qty
+    ORDER BY p.date DESC, p.store, p.item;
     """
     with conn.cursor() as cursor:
         cursor.execute(create_view_query)
@@ -143,67 +126,39 @@ def recreate_stockcount_purchases_view(conn):
     return
 
 
-def main(cur, conn, engine):
-    file_path = "./downloads/UnitOfMeasure.csv"
-    uofm = pd.read_csv(
-        file_path,
-        usecols=[
-            "ID",
-            "Name",
-            "Equivalent Qty",
-            "Equivalent UofM",
-            "Measure Type",
-            "Base UofM",
-            "Base Qty",
-        ],
-    )
-    uofm.rename(
-        columns={
-            "ID": "uofm_id",
-            "Name": "name",
-            "Equivalent Qty": "equivalent_qty",
-            "Equivalent UofM": "equivalent_uofm",
-            "Measure Type": "measure_type",
-            "Base UofM": "base_uofm",
-            "Base Qty": "base_qty",
-        },
-        inplace=True,
-    )
-
-    # get the current unitsofmeasure table
-    cur.execute("SELECT uofm_id, name FROM unitsofmeasure")
-    # store it as a pandas dataframe
-    uofm_db = pd.DataFrame(cur.fetchall(), columns=["uofm_id", "name"])
-    # find the renamed items
-    renamed_items = findRenamed(uofm_db, uofm)
-
-    # ic(renamed_items)
-
-    # psql query to check for the old name in the table transacction_detail and replaces it with the new name
-    for index, row in renamed_items.iterrows():
-        cur.execute(
-            f"UPDATE transaction_detail SET unitofmeasurename = '{row['new_name']}' WHERE unitofmeasurename = '{row['old_name']}'"
+def recreate_stockcount_monthly_view(conn):
+    create_view_query = """
+    CREATE OR REPLACE VIEW stockcount_monthly AS
+     WITH date_series AS (
+         SELECT generate_series(CURRENT_DATE - '29 days'::interval, CURRENT_DATE::timestamp without time zone, '1 day'::interval)::date AS date
+        ), all_combinations AS (
+         SELECT d.date,
+            i.store_id,
+            i.id AS item_id,
+            i.item_name
+           FROM date_series d
+             CROSS JOIN inv_items i
         )
+    SELECT ac.date,
+        ac.item_id,
+        ac.item_name,
+        ac.store_id,
+        COALESCE(ic.count_total, 0) AS count_total
+    FROM all_combinations ac
+        LEFT JOIN inv_count ic ON ac.item_id = ic.item_id AND ac.store_id = ic.store_id AND ac.date = ic.trans_date
+    ORDER BY ac.date DESC, ac.store_id;
+    """
+
+    with conn.cursor() as cursor:
+        cursor.execute(create_view_query)
         conn.commit()
 
-    # drop table if exists
-    cur.execute('drop table if exists "unitsofmeasure" CASCADE')
-    conn.commit()
-    # update database with table
-    try:
-        uofm.to_sql("unitsofmeasure", engine, index=False)
-        conn.commit()
-    except IntegrityError:
-        print("Error writing to database: IntegrityError")
-        return 1
-    except Exception as e:
-        print("Error writing to database:", e)
-        return 1
+    return
 
 
 if __name__ == "__main__":
     with DatabaseConnection() as db:
-        main(db.cur, db.conn, db.engine)
+        recreate_stockcount_purchases_view(db.conn)
         recreate_stockcount_sales_view(db.conn)
         recreate_stockcount_waste_view(db.conn)
-        recreate_stockcount_purchases_view(db.conn)
+        recreate_stockcount_monthly_view(db.conn)

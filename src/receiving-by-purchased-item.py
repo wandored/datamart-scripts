@@ -2,9 +2,9 @@
 Track purchases of selected items and create spreadsheet
 """
 
-from dbconnect import DatabaseConnection
-
 import pandas as pd
+
+from dbconnect import DatabaseConnection
 
 
 def get_file_path():
@@ -135,7 +135,6 @@ def make_pivot(table):
 
 
 def save_file(table):
-    #       filename = filedialog.asksaveasfilename(filetypes=(("XLSX Files", "*.xlsx"), ("All Files", "*.*")))
     filename = "./output/receiving_by_purchased_item.xlsx"
     with pd.ExcelWriter(filename) as writer:
         vendor, restaurant = make_pivot(df_table)

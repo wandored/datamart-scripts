@@ -7,6 +7,12 @@ updates the dates, and writes the updated calendar to both a new CSV file and a 
 import pandas as pd
 from datetime import datetime, timedelta
 from dbconnect import DatabaseConnection
+from utils import (
+    recreate_stockcount_sales_view,
+    recreate_stockcount_purchases_view,
+    recreate_stockcount_waste_view,
+    recreate_stockcount_monthly_view,
+)
 
 
 # Define a function to increment dates by 365 days
@@ -94,3 +100,7 @@ if __name__ == "__main__":
     with DatabaseConnection() as db:
         create_new_year()
         write_to_database(db.conn, db.engine)
+        recreate_stockcount_sales_view(db.conn)
+        recreate_stockcount_waste_view(db.conn)
+        recreate_stockcount_purchases_view(db.conn)
+        recreate_stockcount_monthly_view(db.conn)

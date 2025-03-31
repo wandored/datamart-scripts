@@ -74,9 +74,11 @@ def main(cur, conn, engine):
     cur.execute('drop table if exists "unitsofmeasure" CASCADE')
     conn.commit()
     # update database with table
+    print(uofm)
     try:
         uofm.to_sql("unitsofmeasure", engine, index=False)
         conn.commit()
+        print("database uploaded")
     except IntegrityError:
         print("Error writing to database: IntegrityError")
         return 1

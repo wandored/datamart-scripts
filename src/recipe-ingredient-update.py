@@ -21,8 +21,7 @@ from utils import (
 
 def get_recipe_ingredient() -> pd.DataFrame:
     df = pd.read_csv(
-        "./downloads/ingredients.csv",
-        usecols=["Item", "Recipe", "Qty", "UofM"],
+        "./downloads/ingredients.csv", usecols=["Item", "Recipe", "Qty", "UofM"]
     )
     df.rename(
         columns={
@@ -358,7 +357,7 @@ def update_recipe_cost(cur, conn, engine) -> None:
     df.drop(columns=["locationid"], inplace=True)
 
     menu_analysis = pd.read_csv(
-        "../menu-engineering/downloads/Menu Price Analysis.csv",
+        "./downloads/Menu Price Analysis.csv",
         skiprows=3,
         sep=",",
         thousands=",",

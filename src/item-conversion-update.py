@@ -23,7 +23,20 @@ from utils import (
 
 
 def get_conversion_units():
-    PurchaseItems = pd.read_csv("./downloads/PurchaseItems.csv")
+    PurchaseItems = pd.read_csv(
+        "./downloads/PurchaseItems.csv",
+        usecols=[
+            "ID",
+            "Name",
+            "Weight Qty",
+            "Weight UofM",
+            "Volume Qty",
+            "Volume UofM",
+            "Each Qty",
+            "Each UofM",
+            "Measure Type",
+        ],
+    )
     PurchaseItems.rename(
         columns={
             "ID": "itemid",
@@ -38,7 +51,20 @@ def get_conversion_units():
         },
         inplace=True,
     )
-    RecipeItems = pd.read_csv("./downloads/RecipeItems.csv")
+    RecipeItems = pd.read_csv(
+        "./downloads/RecipeItems.csv",
+        usecols=[
+            "ID",
+            "Name",
+            "Weight Qty",
+            "Weight UofM",
+            "Volume Qty",
+            "Volume UofM",
+            "Each Qty",
+            "Each UofM",
+            "Measure Type",
+        ],
+    )
     RecipeItems.rename(
         columns={
             "ID": "itemid",
@@ -73,6 +99,7 @@ def write_to_database(df, cur, conn, engine):
     table_name = "item_conversion"
     temp_table_name = "temp_table"
     try:
+        print(df.info())
         df.to_sql(temp_table_name, engine, if_exists="replace", index=False)
         update_query = sql.SQL(
             """

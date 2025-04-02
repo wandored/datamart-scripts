@@ -14,6 +14,7 @@ dependencies = [
     "sqlalchemy",
     "json",
     "jinja2",
+    "requests"
     "openpyxl"
 ]
 

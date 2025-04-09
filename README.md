@@ -3,25 +3,30 @@ Collection of utilities and scripts used to manage and update DataMart tables
 
 ## File downloads:
 ### Restaurant365 Files:
+* menu_items_export_r365.csv
 * Menu Price Analysis.csv
 * Product Mix.csv
-* Receiving by Purchased Item.csv
+* PurchaseItems.csv
+* RecipeItems.csv
 * UnitOfMeasure.csv
-* menu_items_export_r365.csv
+* ingredients.csv
+* menu_items.csv
+* prep_recipes.csv
+* Receiving by Purchased Item.csv (item specific)
 
 ### Toast Files:
-* MenuItem_Export-no-mods.csv
 * MenuItem_Export_toast.csv
+* MenuItem_Export-no-mods.csv
 
 ### Company Files:
 * budgets/*.csv (store budgets)
 * fiscal_calendar_2024.csv
-* specialty.txt
 
 ## Utility Files:
 * config.py
 * dbconnect.py
 * utils.py
+* specialty.txt
 
 ## Scripts
 * **budget-update.py**
@@ -38,6 +43,8 @@ Collection of utilities and scripts used to manage and update DataMart tables
   * This script processes restaurant menu data from CSV files, performs menu engineering analysis, and formats the results into an Excel report.
 * **menu-item-mapping.py**
   * Utility used to check for Menu Items not mapped in R365 from Toast POS
+* **odata_table_update.py**
+  * Updates the smaller tables that rarely change
 * **receiving-by-purchased-item.py**
   * Track purchases of select items in the receiving by purchased items report.  Sorting Products and Vendors and calculating totals for each.
 * **recipe-ingredient-update.py**

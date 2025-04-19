@@ -40,20 +40,26 @@ def get_ingredients():
 
 
 def get_menu_recipes():
-    df = pd.read_csv("./downloads/menu_recipes.csv", usecols=["RecipeName", "Active"])
-    df.rename(columns={"RecipeName": "recipe_name", "Active": "active"}, inplace=True)
+    df = pd.read_csv(
+        "./downloads/RecipeItems.csv", usecols=["Name", "Active", "Inventory UofM"]
+    )
+    df.rename(columns={"Name": "recipe_name", "Active": "active"}, inplace=True)
+    df = df[df["Inventory UofM"].isna()]
     return df
 
 
 def get_prep_recipes():
-    df = pd.read_csv("./downloads/prep_recipes.csv", usecols=["RecipeName", "Active"])
-    df.rename(columns={"RecipeName": "recipe_name", "Active": "active"}, inplace=True)
+    df = pd.read_csv(
+        "./downloads/RecipeItems.csv", usecols=["Name", "Active", "Inventory UofM"]
+    )
+    df.rename(columns={"Name": "recipe_name", "Active": "active"}, inplace=True)
+    df = df[df["Inventory UofM"].notna()]
     return df
 
 
 def get_purchase_items():
-    df = pd.read_csv("./downloads/items.csv", usecols=["itemName", "Active"])
-    df.rename(columns={"itemName": "purchase_item", "Active": "active"}, inplace=True)
+    df = pd.read_csv("./downloads/PurchaseItems.csv", usecols=["Name", "Active"])
+    df.rename(columns={"Name": "purchase_item", "Active": "active"}, inplace=True)
     return df
 
 

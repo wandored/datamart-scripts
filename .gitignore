@@ -1,6 +1,7 @@
 __pycache__/
 .venv/
 .env/
+*.xlsx
 downloads/
 output/
 datamart_scripts.egg-info/

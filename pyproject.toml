@@ -1,22 +1,12 @@
-[build-system]
-requires = [
-    "setuptools >= 77.0.3"
-]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "datamart-scripts"
-version = "2025.0.0"
+name = "datamart_scripts"
+version = "0.1.0"
 dependencies = [
-    "pandas",
-    "psycopg2",
-    "icecream",
-    "sqlalchemy",
-    "json",
-    "jinja2",
-    "requests",
-    "openpyxl"
+  "pandas",
+  "requests",
+  "psycopg2",
+  "sqlalchemy",
+  "numpy",
+  "openpyxl",
+  "icecream"
 ]
-
-[tool.setuptools]
-packages = { find = { where = ["src"]}}

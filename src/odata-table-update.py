@@ -1,11 +1,11 @@
 import json
+import logging
+from io import StringIO
 
 import pandas as pd
 import requests
 from psycopg2 import sql
 from psycopg2.errors import UniqueViolation
-from io import StringIO
-
 
 from config import Config
 from dbconnect import DatabaseConnection
@@ -61,11 +61,11 @@ def update_glaccount(cur, conn, engine):
             table=sql.Identifier("glaccount"), temp_table=sql.Identifier("temp_table")
         )
         cur.execute(upsert_query)
-    except UniqueViolation:
-        print("Error upserting data due to unique contraint violation.")
+    except UniqueViolation as e:
+        logging.error("Error upserting data: %s", e)
         return 1
     except Exception as e:
-        print("Error writing to database:", e)
+        logging.error("Error writing to database: %s", e)
         return 1
     finally:
         try:
@@ -73,7 +73,7 @@ def update_glaccount(cur, conn, engine):
             cur.execute("DROP TABLE IF EXISTS {} CASCADE".format("temp_table"))
             conn.commit()
         except Exception as e:
-            print("Error dropping temporary table:", e)
+            logging.error("Error dropping temporary table: %s", e)
             conn.rollback()  # rollback the transaction if an error occurs
             return 1
     return 0
@@ -114,11 +114,11 @@ def update_jobtitle(cur, conn, engine):
         )
         cur.execute(upsert_query)
         conn.commit()
-    except UniqueViolation:
-        print("Error upserting data due to unique contraint violation.")
+    except UniqueViolation as e:
+        logging.error("Error upserting data: %s", e)
         return 1
     except Exception as e:
-        print("Error writing to database:", e)
+        logging.error("Error writing to database: %s", e)
         return 1
     finally:
         try:
@@ -126,7 +126,7 @@ def update_jobtitle(cur, conn, engine):
             cur.execute("DROP TABLE IF EXISTS {} CASCADE".format("temp_table"))
             conn.commit()
         except Exception as e:
-            print("Error dropping temporary table:", e)
+            logging.error("Error dropping temporary table: %s", e)
             conn.rollback()  # rollback the transaction if an error occurs
             return 1
     return 0
@@ -164,11 +164,11 @@ def update_location(cur, conn, engine):
         )
         cur.execute(upsert_query)
         conn.commit()
-    except UniqueViolation:
-        print("Error upserting data due to unique contraint violation.")
+    except UniqueViolation as e:
+        logging.error("Error upserting data: %s", e)
         return 1
     except Exception as e:
-        print("Error writing to database:", e)
+        logging.error("Error writing to database: %s", e)
         return 1
     finally:
         try:
@@ -176,7 +176,7 @@ def update_location(cur, conn, engine):
             cur.execute("DROP TABLE IF EXISTS {} CASCADE".format("temp_table"))
             conn.commit()
         except Exception as e:
-            print("Error dropping temporary table:", e)
+            logging.error("Error dropping temporary table: %s", e)
             conn.rollback()  # rollback the transaction if an error occurs
             return 1
     return 0
@@ -211,11 +211,11 @@ def update_company(cur, conn, engine):
         )
         cur.execute(upsert_query)
         conn.commit()
-    except UniqueViolation:
-        print("Error upserting data due to unique contraint violation.")
+    except UniqueViolation as e:
+        logging.error("Error writing to database: %s", e)
         return 1
     except Exception as e:
-        print("Error writing to database:", e)
+        logging.error("Error writing to database: %s", e)
         return 1
     finally:
         try:
@@ -223,7 +223,7 @@ def update_company(cur, conn, engine):
             cur.execute("DROP TABLE IF EXISTS {} CASCADE".format("temp_table"))
             conn.commit()
         except Exception as e:
-            print("Error dropping temporary table:", e)
+            logging.error("Error dropping temporary table: %s", e)
             conn.rollback()  # rollback the transaction if an error occurs
             return 1
     return 0
@@ -260,11 +260,11 @@ def update_item(cur, conn, engine):
         ).format(table=sql.Identifier("item"), temp_table=sql.Identifier("temp_table"))
         cur.execute(upsert_query)
         conn.commit()
-    except UniqueViolation:
-        print("Error upserting data due to unique contraint violation.")
+    except UniqueViolation as e:
+        logging.error("Error writing to database: %s", e)
         return 1
     except Exception as e:
-        print("Error writing to database:", e)
+        logging.error("Error writing to database: %s", e)
         return 1
     finally:
         try:
@@ -272,7 +272,7 @@ def update_item(cur, conn, engine):
             cur.execute("DROP TABLE IF EXISTS {} CASCADE".format("temp_table"))
             conn.commit()
         except Exception as e:
-            print("Error dropping temporary table:", e)
+            logging.error("Error dropping temporary table: %s", e)
             conn.rollback()  # rollback the transaction if an error occurs
             return 1
     return 0

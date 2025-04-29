@@ -1,16 +1,13 @@
 import argparse
 import json
-import time
 import logging
+import time
 from datetime import datetime, timedelta
 from io import StringIO
 
-from numpy import insert
 import pandas as pd
-from pandas.io.sql import execute
 import requests
-from psycopg2 import sql, IntegrityError
-from psycopg2.errors import UniqueViolation
+from psycopg2 import IntegrityError, sql
 from psycopg2.extras import execute_values
 
 from config import Config
@@ -471,9 +468,9 @@ def update_sales_payment(start, end, cur, conn, engine):
 
 def main(start_date, end_date, step, cur, conn, engine):
     update_function = [
-        # update_transaction,
-        # update_transaction_detail,
-        # update_labor_detail,
+        update_transaction,
+        update_transaction_detail,
+        update_labor_detail,
         update_sales_detail,
         update_sales_employee,
         update_sales_payment,

@@ -2,8 +2,9 @@ import argparse
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from io import StringIO
+from tqdm import tqdm
 
 import pandas as pd
 import requests
@@ -86,17 +87,17 @@ def make_HTTP_request(url):
 
 
 def upload_to_database(df, table_name, keys, key_column, cur, conn):
-    try:
-        delete_query = sql.SQL("DELETE FROM {} WHERE {} = ANY(%s)").format(
-            sql.Identifier(table_name), sql.Identifier(key_column)
-        )
-        cur.execute(delete_query, (keys,))
-        conn.commit()
-        print(f"Deleted {cur.rowcount} rows from table: {table_name}")
-    except Exception as e:
-        logging.error("Error deleting data: %s", e)
-        conn.rollback()
-        return 1
+    # try:
+    #     delete_query = sql.SQL("DELETE FROM {} WHERE {} = ANY(%s)").format(
+    #         sql.Identifier(table_name), sql.Identifier(key_column)
+    #     )
+    #     cur.execute(delete_query, (keys,))
+    #     conn.commit()
+    #     print(f"Deleted {cur.rowcount} rows from table: {table_name}")
+    # except Exception as e:
+    #     logging.error("Error deleting data: %s", e)
+    #     conn.rollback()
+    #     return 1
 
     try:
         # Create the INSERT query dynamically
@@ -174,19 +175,20 @@ def update_transaction_detail(start, end, cur, conn, engine):
     transid_list = df["transactionId"].tolist()
     transid_list = list(set(transid_list))
     # split transid_list into chunks of 10
-    trans_detail = pd.DataFrame()
-    for tl in transid_list:
-        # max 10 transaction id per query
+    dfs = []
+    for tl in tqdm(transid_list, desc="Fetching Transaction Details", unit="txn"):
         url_filter = "$filter=transactionId eq {}".format(tl)
         query = "$select=transactionId,locationId,glAccountId,itemId,credit,debit,amount,quantity,previousCountTotal,adjustment,unitOfMeasureName&{}".format(
             url_filter
         )
         url = "{}/TransactionDetail?{}".format(Config.SRVC_ROOT, query)
         df = make_HTTP_request(url)
-        # concatenate the dataframes
-        trans_detail = pd.concat([trans_detail, df], ignore_index=True)
+        if not df.empty:
+            dfs.append(df)
+    if not dfs:
+        return
+    df = pd.concat(dfs, ignore_index=True)
 
-    df = trans_detail
     if df.empty:
         logging.info("No data returned for the given date range.")
         return
@@ -204,12 +206,14 @@ def update_transaction_detail(start, end, cur, conn, engine):
     # append a new column called date with values set to NULL
     df["date"] = None
     # query the transaction table for the date and transactionid
-    query = """ SELECT date, transactionid FROM transaction
-                WHERE date >= '{}' AND date < '{}'
-                ORDER BY date""".format(
-        start, end
-    )
-    df2 = pd.read_sql(query, engine)
+    query = "SELECT date, transactionid FROM transaction WHERE transactionid = ANY(%s)"
+    df2 = pd.read_sql(query, engine, params=(transid_list,))
+    # query = """ SELECT date, transactionid FROM transaction
+    #             WHERE date >= '{}' AND date < '{}'
+    #             ORDER BY date""".format(
+    #     start, end
+    # )
+    # df2 = pd.read_sql(query, engine)
     # where transaction id match add the date to the transaction detail table
     df = pd.merge(df, df2, on=["transactionid"])
     # drop date_x and rename date_y to date
@@ -220,15 +224,14 @@ def update_transaction_detail(start, end, cur, conn, engine):
     if df["date"].isnull().any():
         raise ValueError("Invalid date format encountered in the data.")
 
-    print(f"Start Date: {start}, End Date: {end}")
     try:
-        id_list = df["transactionid"].unique().tolist()
-        for id in id_list:
+        if transid_list:
             cur.execute(
-                'DELETE FROM "transaction_detail" WHERE transactionid = %s', (id,)
+                'DELETE FROM "transaction_detail" WHERE transactionid = ANY(%s)',
+                (transid_list,),
             )
-        conn.commit()
-        print(f"Deleted {cur.rowcount} rows from table: transaction_detail")
+            conn.commit()
+            print(f"Deleted {cur.rowcount} rows from table: transaction_detail")
     except Exception as e:
         logging.error("Error deleting data: %s", e)
         conn.rollback()
@@ -468,25 +471,44 @@ def update_sales_payment(start, end, cur, conn, engine):
 
 def main(start_date, end_date, step, cur, conn, engine):
     update_function = [
-        update_transaction,
-        update_transaction_detail,
-        update_labor_detail,
+        # update_transaction,
+        # update_transaction_detail,
+        # update_labor_detail,
         update_sales_detail,
-        update_sales_employee,
-        update_sales_payment,
+        # update_sales_employee,
+        # update_sales_payment,
     ]
 
     for current_function in update_function:
-        current_date = start_date
-        start_time = time.time()
+        date_ranges = (
+            pd.date_range(start=start_date, end=end_date, freq=step)
+            .to_pydatetime()
+            .tolist()
+        )
+        # current_date = start_date
+        # start_time = time.time()
 
-        while current_date < end_date:
-            period = current_date + step
-            current_function(current_date, period, cur, conn, engine)
-            current_date = current_date + step
-            total_time = time.time() - start_time
-        print(f"Time elapsed to run {current_function}: {total_time}")
-        print()
+        if len(date_ranges) > 1:
+            date_pairs = list(zip(date_ranges[:-1], date_ranges[1:]))
+        else:
+            date_pairs = [(start_date, end_date)]
+
+        start_time = time.time()
+        for start, end in tqdm(date_pairs, desc=f"Running {current_function.__name__}"):
+            current_function(start, end, cur, conn, engine)
+
+        total_time = time.time() - start_time
+        print(
+            f"\nTime elapsed to run {current_function.__name__}: {total_time:.2f} seconds\n"
+        )
+
+        # while current_date < end_date:
+        #     period = current_date + step
+        #     current_function(current_date, period, cur, conn, engine)
+        #     current_date = current_date + step
+        #     total_time = time.time() - start_time
+        # print(f"Time elapsed to run {current_function}: {total_time}")
+        # print()
 
     return 0
 

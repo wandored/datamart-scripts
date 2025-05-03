@@ -2,6 +2,7 @@ import re
 from datetime import date
 from openpyxl import load_workbook
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.utils import quote_sheetname
 
@@ -129,17 +130,28 @@ def extract_correct_pos_name(row):
 
 
 def create_excel_for_location(combined_df, location, today_date):
-    filename = (
-        f"/home/wandored/Sync/ReportData/{location}_wine_template_{today_date}.xlsx"
-    )
+    filename = f"/home/wandored/Sync/ReportData/Wine_Forms/{location}_wine_template_{today_date}.xlsx"
 
-    # Step 1: Save combined_df to Sheet1 ("Data")
+    # Save combined_df to Sheet1 ("Data")
     combined_df.to_excel(filename, sheet_name="Data", index=False, engine="openpyxl")
 
-    # Step 2: Open workbook with openpyxl
+    # Load workbook and get Data sheet
     wb = load_workbook(filename)
+    data_sheet = wb["Data"]
 
-    # Step 3: Create Wine Form sheet
+    # Add Excel table to Data sheet
+    max_row = len(combined_df) + 1  # +1 for header
+    data_table = Table(displayName="DataTable", ref=f"A1:E{max_row}")
+    data_table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    data_sheet.add_table(data_table)
+
+    # Create Wine Form sheet
     table_sheet = wb.create_sheet(title="Wine Form")
 
     # Define your Wine Form headers
@@ -167,29 +179,82 @@ def create_excel_for_location(combined_df, location, today_date):
 
     # Define named range for purchase_items
     max_row = len(combined_df) + 1
-    purchase_item_range = f"Data!$A$2:$A${max_row}"
+    purchase_item_range = f"{quote_sheetname('Data')}!$A$2:$A${max_row}"
     dn = DefinedName("purchase_items", attr_text=purchase_item_range)
     wb.defined_names.add(dn)
-    # Step 4: Add Data Validation dropdown for "R365 Purchase Item" (column E)
-    dv = DataValidation(
+
+    # Add Data Validation dropdown for "R365 Purchase Item" (column B)
+    dv_purchase = DataValidation(
         type="list",
         formula1="=purchase_items",  # A2:A{N}
         allow_blank=True,
-        showDropDown=True,
+        showDropDown=False,
     )
-    table_sheet.add_data_validation(dv)
-    dv.add(f"B2:B20")  # Apply dropdown to B2 through B20
+    table_sheet.add_data_validation(dv_purchase)
+    dv_purchase.add(f"B2:B30")  # Apply dropdown to B2 through B30
 
-    # Step 5: Setup VLOOKUP formulas
-    for row in range(2, 21):  # For rows 2 to 20
-        # VLOOKUP for Bin Number (Column D)
-        table_sheet[f"D{row}"].value = (
-            f'=IFERROR(VLOOKUP(B{row}, Data!A:E, 5, FALSE), "")'
-        )
-        # VLOOKUP for Toast Button (Column C)
+    # Data validation for Action column (Column A)
+    dv_action = DataValidation(
+        type="list",
+        formula1='"Add,Delete,Vintage,Other"',
+        allow_blank=True,
+        showDropDown=False,
+    )
+    table_sheet.add_data_validation(dv_action)
+    dv_action.add("A2:A30")
+
+    # Data validation for Vintage column (Column G)
+    dv_action = DataValidation(
+        type="list",
+        formula1='"Yes,No"',
+        allow_blank=True,
+        showDropDown=False,
+    )
+    table_sheet.add_data_validation(dv_action)
+    dv_action.add("G2:G30")
+
+    # Add Excel table to Wine Form sheet
+    form_table = Table(displayName="WineFormTable", ref="A1:O30")  # 15 columns
+    form_table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    table_sheet.add_table(form_table)
+
+    # Set Excel formulas in rows
+    for row in range(2, 31):
+        # Toast Button from R365 Purchase Item (Column C)
         table_sheet[f"C{row}"].value = (
             f'=IFERROR(VLOOKUP(B{row}, Data!A:B, 2, FALSE), "")'
         )
+
+        # Bin Number from R365 Purchase Item (Column D)
+        table_sheet[f"D{row}"].value = (
+            f'=IFERROR(VLOOKUP(B{row}, Data!A:E, 5, FALSE), "")'
+        )
+
+        # Target Price 33% (Column J) = Price Paid / 0.33
+        table_sheet[f"J{row}"].value = f'=IFERROR(I{row}/0.33, "")'
+
+        # Cost % (Column L) = Price Paid / Menu Price
+        table_sheet[f"L{row}"].value = f'=IF(OR(K{row}=0, K{row}=""), 0, I{row}/K{row})'
+
+        # Apply Accounting format
+        table_sheet[f"I{row}"].number_format = (
+            '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'  # Price Paid
+        )
+        table_sheet[f"J{row}"].number_format = (
+            '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'  # Target Price
+        )
+        table_sheet[f"K{row}"].number_format = (
+            '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'  # Menu Price
+        )
+
+        # Apply Percentage format with 1 decimal place
+        table_sheet[f"L{row}"].number_format = "0.0%"
 
     wb.save(filename)
     print(f"Saved Excel file for location {location}.")
@@ -215,8 +280,9 @@ def create_worksheets(df):
         "concept",
     ]
     df_cleaned = df.drop(columns=columns_to_drop)
-    df_cleaned.to_csv(
-        "/home/wandored/Sync/ReportData/Steakhouse_wine_links.csv", index=False
+    df_cleaned.to_excel(
+        "/home/wandored/Sync/ReportData/Wine_Forms/Steakhouse_wine_links.xlsx",
+        index=False,
     )
     toast_orphans = df_cleaned[
         df_cleaned["location_name"].isna() | (df_cleaned["location_name"] == "")
@@ -264,7 +330,7 @@ def create_worksheets(df):
 
 
 def main():
-    # Step 1: Authenticate and get access token
+    # Authenticate and get access token
     guid_list = Config.LOCATION_GUID_LIST
     api_access_url = "https://ws-api.toasttab.com"
     token = get_access_token(api_access_url)
@@ -293,14 +359,14 @@ def main():
         )
         create_worksheets(df)
 
-        # df_pivot = df.pivot_table(
-        #     index=["purchase_item", "recipe_name", "toast_item_name"],
-        #     columns="location_name",
-        #     values="bin_number",
-        #     aggfunc="first",
-        # )
-        # df_pivot.to_csv("./output/steakhouse_wine_links.csv", index=True)
-        # print(df_pivot)
+        df_pivot = df.pivot_table(
+            index=["purchase_item", "recipe_name", "toast_item_name"],
+            columns="location_name",
+            values="bin_number",
+            aggfunc="first",
+        )
+        df_pivot.to_csv("./output/steakhouse_wine_links.csv", index=True)
+        print(df_pivot)
 
 
 if __name__ == "__main__":

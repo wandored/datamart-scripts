@@ -21,6 +21,7 @@ Add Plate/Bowl/Utensil
 Add Salt Rim
 Add Sugar Rim
 Add to Platter
+Agave
 Anniversary
 Bar Ice Cream
 Big Rock Ice
@@ -171,6 +172,7 @@ Server Shrit
 Server Tie
 Shoestring
 Shot
+Simple Syrup
 Skinny
 Sliced
 Snifter

@@ -2,35 +2,20 @@ import argparse
 import json
 import logging
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from io import StringIO
-from tqdm import tqdm
 
 import pandas as pd
 import requests
 from psycopg2 import IntegrityError, sql
 from psycopg2.extras import execute_values
+from tqdm import tqdm
 
 from config import Config
 from dbconnect import DatabaseConnection
 
 
 def fetch_calendar_dates(conn, cur, **kwargs):
-    """
-    Fetch calendar dates based on the provided parameters.
-
-    Args:
-        conn: Database connection object.
-        cur: Database cursor object.
-        kwargs: Dictionary containing 'year', 'period', and/or 'week'.
-
-    Returns:
-        Tuple containing start and end dates.
-
-    Raises:
-        RuntimeError: If a database operation fails.
-        ValueError: If required parameters are missing.
-    """
     try:
         # Validate required parameters
         if "year" not in kwargs:
@@ -45,7 +30,7 @@ def fetch_calendar_dates(conn, cur, **kwargs):
             params.extend([kwargs["period"], kwargs["week"]])
         elif "period" in kwargs:
             query += " AND period = %s LIMIT 1"
-            params.append(kwargs["period"])
+            params.extend([kwargs["period"]])
         else:
             query += " LIMIT 1"
 
@@ -59,8 +44,10 @@ def fetch_calendar_dates(conn, cur, **kwargs):
             print(data[0][7], data[0][8])
             return data[0][7], data[0][8]
         elif "period" in kwargs:
+            print(data[0][9], data[0][10])
             return data[0][9], data[0][10]
         else:
+            print(data[0][13], data[0][14])
             return data[0][13], data[0][14]
 
     except Exception as e:
@@ -73,7 +60,17 @@ def make_HTTP_request(url):
     while True:
         if not url:
             break
-        r = requests.get(url, auth=(Config.SRVC_USER, Config.SRVC_PSWRD))
+        try:
+            r = requests.get(
+                url, auth=(Config.SRVC_USER, Config.SRVC_PSWRD), timeout=30
+            )
+            r.raise_for_status()
+        except requests.exceptions.Timeout:
+            print(f"Timeout while trying to reach {url}")
+            # handle timeout case, maybe retry or skip
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed: {e}")
+            # handle other errors
         if r.status_code == 200:
             json_data = json.loads(r.text)
             all_records = all_records + json_data["value"]
@@ -87,17 +84,17 @@ def make_HTTP_request(url):
 
 
 def upload_to_database(df, table_name, keys, key_column, cur, conn):
-    # try:
-    #     delete_query = sql.SQL("DELETE FROM {} WHERE {} = ANY(%s)").format(
-    #         sql.Identifier(table_name), sql.Identifier(key_column)
-    #     )
-    #     cur.execute(delete_query, (keys,))
-    #     conn.commit()
-    #     print(f"Deleted {cur.rowcount} rows from table: {table_name}")
-    # except Exception as e:
-    #     logging.error("Error deleting data: %s", e)
-    #     conn.rollback()
-    #     return 1
+    try:
+        delete_query = sql.SQL("DELETE FROM {} WHERE {} = ANY(%s)").format(
+            sql.Identifier(table_name), sql.Identifier(key_column)
+        )
+        cur.execute(delete_query, (keys,))
+        conn.commit()
+        print(f"Deleted {cur.rowcount} rows from {table_name}")
+    except Exception as e:
+        logging.error("Error deleting data: %s", e)
+        conn.rollback()
+        return 1
 
     try:
         # Create the INSERT query dynamically
@@ -121,7 +118,7 @@ def upload_to_database(df, table_name, keys, key_column, cur, conn):
 
 
 def update_transaction(start, end, cur, conn, engine):
-    url_filter = "$filter=date ge {}T00:00:00Z and date lt {}T00:00:00Z".format(
+    url_filter = "$filter=date ge {}T00:00:00Z and date le {}T00:00:00Z".format(
         start, end
     )
     query = "$select=transactionId,locationId,transactionNumber,companyId,date,type&{}".format(
@@ -162,7 +159,7 @@ def update_transaction(start, end, cur, conn, engine):
 
 def update_transaction_detail(start, end, cur, conn, engine):
     # get transactionid from transaction table and update transaction_detail table with transactionid
-    url_filter = "$filter=date ge {}T00:00:00Z and date lt {}T00:00:00Z".format(
+    url_filter = "$filter=date ge {}T00:00:00Z and date le {}T00:00:00Z".format(
         start, end
     )
     query = "$select=transactionId&{}".format(url_filter)
@@ -284,6 +281,29 @@ def update_labor_detail(start, end, cur, conn, engine):
             "laborId": "laborid",
         }
     )
+    # make dateworked a datetime object
+    df["dateworked"] = pd.to_datetime(df["dateworked"], errors="coerce")
+
+    df.to_sql("temp_table", engine, if_exists="replace", index=False)
+    # Remove old records for the same location and date, but different dailysalessummaryid
+    delete_query = sql.SQL(
+        """
+        DELETE FROM {target}
+        USING {temp}
+        WHERE {target}.location_id = {temp}.location_id
+        AND {target}.dateworked = {temp}.dateworked
+        AND {target}.dailysalessummaryid <> {temp}.dailysalessummaryid
+        """
+    ).format(
+        target=sql.Identifier("labor_detail"),
+        temp=sql.Identifier("temp_table"),
+    )
+
+    cur.execute(delete_query)
+    conn.commit()
+    logging.info(
+        "Deleted old sales_employee records with outdated dailysalessummaryid."
+    )
     try:
         id_list = df["laborid"].unique().tolist()
         for id in id_list:
@@ -317,7 +337,7 @@ def update_labor_detail(start, end, cur, conn, engine):
 
 
 def update_sales_detail(start, end, cur, conn, engine):
-    url_filter = "$filter=date ge {}T00:00:00Z and date lt {}T00:00:00Z".format(
+    url_filter = "$filter=date ge {}T00:00:00Z and date le {}T00:00:00Z".format(
         start, end
     )
     url = "{}/SalesDetail?{}".format(Config.SRVC_ROOT, url_filter)
@@ -353,6 +373,27 @@ def update_sales_detail(start, end, cur, conn, engine):
             "dailySalesSummaryId": "dailysalessummaryid",
         }
     )
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df.to_sql("temp_table", engine, if_exists="replace", index=False)
+    # Remove old records for the same location and date, but different dailysalessummaryid
+    delete_query = sql.SQL(
+        """
+        DELETE FROM {target}
+        USING {temp}
+        WHERE {target}.location = {temp}.location
+        AND {target}.date = {temp}.date
+        AND {target}.dailysalessummaryid <> {temp}.dailysalessummaryid
+        """
+    ).format(
+        target=sql.Identifier("sales_detail"),
+        temp=sql.Identifier("temp_table"),
+    )
+
+    cur.execute(delete_query)
+    conn.commit()
+    logging.info(
+        "Deleted old sales_employee records with outdated dailysalessummaryid."
+    )
 
     try:
         salesdetail_ids = df["salesdetailid"].unique().tolist()
@@ -365,7 +406,7 @@ def update_sales_detail(start, end, cur, conn, engine):
 
 
 def update_sales_employee(start, end, cur, conn, engine):
-    url_filter = "$filter=date ge {}T00:00:00Z and date lt {}T00:00:00Z".format(
+    url_filter = "$filter=date ge {}T00:00:00Z and date le {}T00:00:00Z".format(
         start, end
     )
     url = "{}/SalesEmployee?{}".format(Config.SRVC_ROOT, url_filter)
@@ -407,6 +448,29 @@ def update_sales_employee(start, end, cur, conn, engine):
             "dailySalesSummaryId": "dailysalessummaryid",
         }
     )
+    # Ensure no nulls in important fields
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    df.to_sql("temp_table", engine, if_exists="replace", index=False)
+    # Remove old records for the same location and date, but different dailysalessummaryid
+    delete_query = sql.SQL(
+        """
+        DELETE FROM {target}
+        USING {temp}
+        WHERE {target}.location = {temp}.location
+        AND {target}.date = {temp}.date
+        AND {target}.dailysalessummaryid <> {temp}.dailysalessummaryid
+        """
+    ).format(
+        target=sql.Identifier("sales_employee"),
+        temp=sql.Identifier("temp_table"),
+    )
+
+    cur.execute(delete_query)
+    conn.commit()
+    logging.info(
+        "Deleted old sales_employee records with outdated dailysalessummaryid."
+    )
 
     try:
         sales_ids = df["salesid"].unique().tolist()
@@ -419,7 +483,7 @@ def update_sales_employee(start, end, cur, conn, engine):
 
 
 def update_sales_payment(start, end, cur, conn, engine):
-    url_filter = "$filter=date ge {}T00:00:00Z and date lt {}T00:00:00Z".format(
+    url_filter = "$filter=date ge {}T00:00:00Z and date le {}T00:00:00Z".format(
         start, end
     )
     url = "{}/SalesPayment?{}".format(Config.SRVC_ROOT, url_filter)
@@ -429,7 +493,6 @@ def update_sales_payment(start, end, cur, conn, engine):
         logging.info("No data returned for the given date range.")
         return
 
-    df["date"] = pd.to_datetime(df["date"])
     # drop unwanted columns
     df.drop(
         columns=[
@@ -458,6 +521,28 @@ def update_sales_payment(start, end, cur, conn, engine):
             "dailySalesSummaryId": "dailysalessummaryid",
         }
     )
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    df.to_sql("temp_table", engine, if_exists="replace", index=False)
+    # Remove old records for the same location and date, but different dailysalessummaryid
+    delete_query = sql.SQL(
+        """
+        DELETE FROM {target}
+        USING {temp}
+        WHERE {target}.location = {temp}.location
+        AND {target}.date = {temp}.date
+        AND {target}.dailysalessummaryid <> {temp}.dailysalessummaryid
+        """
+    ).format(
+        target=sql.Identifier("sales_payment"),
+        temp=sql.Identifier("temp_table"),
+    )
+
+    cur.execute(delete_query)
+    conn.commit()
+    logging.info(
+        "Deleted old sales_employee records with outdated dailysalessummaryid."
+    )
 
     try:
         salespayment_ids = df["salespaymentid"].unique().tolist()
@@ -473,50 +558,36 @@ def main(start_date, end_date, step, cur, conn, engine):
     update_function = [
         # update_transaction,
         # update_transaction_detail,
-        # update_labor_detail,
-        update_sales_detail,
-        # update_sales_employee,
-        # update_sales_payment,
+        update_labor_detail,
+        # update_sales_detail,
+        update_sales_employee,
+        update_sales_payment,
     ]
 
     for current_function in update_function:
-        date_ranges = (
-            pd.date_range(start=start_date, end=end_date, freq=step)
-            .to_pydatetime()
-            .tolist()
-        )
-        # current_date = start_date
-        # start_time = time.time()
-
-        if len(date_ranges) > 1:
-            date_pairs = list(zip(date_ranges[:-1], date_ranges[1:]))
-        else:
-            date_pairs = [(start_date, end_date)]
-
+        current_date = start_date
         start_time = time.time()
-        for start, end in tqdm(date_pairs, desc=f"Running {current_function.__name__}"):
-            current_function(start, end, cur, conn, engine)
 
         total_time = time.time() - start_time
-        print(
-            f"\nTime elapsed to run {current_function.__name__}: {total_time:.2f} seconds\n"
-        )
 
-        # while current_date < end_date:
-        #     period = current_date + step
-        #     current_function(current_date, period, cur, conn, engine)
-        #     current_date = current_date + step
-        #     total_time = time.time() - start_time
-        # print(f"Time elapsed to run {current_function}: {total_time}")
-        # print()
+        while current_date < end_date:
+            period = current_date + step
+            current_function(current_date, period, cur, conn, engine)
+            current_date = current_date + step
+            total_time = time.time() - start_time
+        print(
+            f"Time elapsed to run {current_function.__name__}: {total_time:.2f} seconds\n"
+        )
+        print()
 
     return 0
 
 
 if __name__ == "__main__":
+    print(f"Script run time: {datetime.now()}")
+
     # Create and parse command line arguments
     parser = argparse.ArgumentParser()
-
     parser.add_argument("-y", "--year", help="Year to run the script")
     parser.add_argument("-p", "--period", help="Period to run the script")
     parser.add_argument("-w", "--week", help="Week to run the script")
@@ -532,22 +603,20 @@ if __name__ == "__main__":
                 period=args.period,
                 week=args.week,
             )
-            step = timedelta(days=7)  # grab the whole week
+            step = timedelta(days=1)
         elif args.year and args.period:
             start_date, end_date = fetch_calendar_dates(
                 cur=db.cur, conn=db.conn, year=args.year, period=args.period
             )
-            step = timedelta(days=7)  # grab a week at a time
+            step = timedelta(days=1)
         elif args.year:
             start_date, end_date = fetch_calendar_dates(
                 cur=db.cur, conn=db.conn, year=args.year
             )
-            step = timedelta(days=28)
+            step = timedelta(days=1)
         else:
-            print("You must provide a year")
+            print("You must provide a year\n")
             parser.print_help()
             exit(1)
 
-        print(f"Script run time: {datetime.now()}")
-        print()
         main(start_date, end_date, step, db.cur, db.conn, db.engine)

@@ -1,5 +1,5 @@
 import re
-from datetime import date
+from datetime import date, datetime
 from openpyxl import load_workbook
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -227,14 +227,14 @@ def create_excel_for_location(combined_df, location, today_date):
     # Set Excel formulas in rows
     for row in range(2, 31):
         # Toast Button from R365 Purchase Item (Column C)
-        table_sheet[f"C{row}"].value = (
-            f'=IFERROR(VLOOKUP(B{row}, Data!A:B, 2, FALSE), "")'
-        )
+        table_sheet[
+            f"C{row}"
+        ].value = f'=IFERROR(VLOOKUP(B{row}, Data!A:B, 2, FALSE), "")'
 
         # Bin Number from R365 Purchase Item (Column D)
-        table_sheet[f"D{row}"].value = (
-            f'=IFERROR(VLOOKUP(B{row}, Data!A:E, 5, FALSE), "")'
-        )
+        table_sheet[
+            f"D{row}"
+        ].value = f'=IFERROR(VLOOKUP(B{row}, Data!A:E, 5, FALSE), "")'
 
         # Target Price 33% (Column J) = Price Paid / 0.33
         table_sheet[f"J{row}"].value = f'=IFERROR(I{row}/0.33, "")'
@@ -243,13 +243,19 @@ def create_excel_for_location(combined_df, location, today_date):
         table_sheet[f"L{row}"].value = f'=IF(OR(K{row}=0, K{row}=""), 0, I{row}/K{row})'
 
         # Apply Accounting format
-        table_sheet[f"I{row}"].number_format = (
+        table_sheet[
+            f"I{row}"
+        ].number_format = (
             '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'  # Price Paid
         )
-        table_sheet[f"J{row}"].number_format = (
+        table_sheet[
+            f"J{row}"
+        ].number_format = (
             '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'  # Target Price
         )
-        table_sheet[f"K{row}"].number_format = (
+        table_sheet[
+            f"K{row}"
+        ].number_format = (
             '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'  # Menu Price
         )
 
@@ -365,8 +371,14 @@ def main():
             values="bin_number",
             aggfunc="first",
         )
+        today_date = date.today().strftime("%Y-%m-%d")
         df_pivot.to_csv("./output/steakhouse_wine_links.csv", index=True)
-        print(df_pivot)
+        df_pivot.to_excel(
+            "/home/wandored/Sync/ReportData/Wine_Forms/Steakhouse_wine_links.xlsx",
+            index=True,
+            sheet_name=today_date,
+        )
+        print("Saved steakhouse_wine_links")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from psycopg2.errors import UniqueViolation
 from config import Config
 from dbconnect import DatabaseConnection
 from utils import (
+    recreate_stockcount_conversion_view,
     recreate_stockcount_sales_view,
     recreate_stockcount_purchases_view,
     recreate_stockcount_waste_view,
@@ -297,3 +298,4 @@ if __name__ == "__main__":
         recreate_stockcount_purchases_view(db.conn)
         recreate_stockcount_monthly_view(db.conn)
         recreate_stockcount_category_totals_view(db.conn)
+        recreate_stockcount_conversion_view(db.conn)

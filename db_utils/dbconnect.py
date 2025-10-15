@@ -2,7 +2,7 @@ import psycopg2
 from psycopg2.extras import DictCursor
 from sqlalchemy import create_engine
 
-from config import Config
+from db_utils.config import Config
 
 
 class DatabaseConnection:

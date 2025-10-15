@@ -7,7 +7,7 @@ import time
 import pandas as pd
 import requests
 
-from config import Config
+from db_utils.config import Config
 
 
 def decode_jwt(token):

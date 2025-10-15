@@ -5,14 +5,8 @@ import pandas as pd
 # import icecream as ic
 from psycopg2.errors import IntegrityError
 
-from dbconnect import DatabaseConnection
-from utils import (
-    recreate_stockcount_sales_view,
-    recreate_stockcount_purchases_view,
-    recreate_stockcount_waste_view,
-    recreate_stockcount_monthly_view,
-    recreate_stockcount_conversion_view,
-)
+from db_utils.dbconnect import DatabaseConnection
+from db_utils.recreate_views import recreate_all_views
 
 
 # finds and returns the renamed items
@@ -91,8 +85,4 @@ def main(cur, conn, engine):
 if __name__ == "__main__":
     with DatabaseConnection() as db:
         main(db.cur, db.conn, db.engine)
-        recreate_stockcount_sales_view(db.conn)
-        recreate_stockcount_waste_view(db.conn)
-        recreate_stockcount_purchases_view(db.conn)
-        recreate_stockcount_monthly_view(db.conn)
-        recreate_stockcount_conversion_view(db.conn)
+        recreate_all_views(db.conn)

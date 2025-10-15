@@ -13,14 +13,8 @@ import pandas as pd
 from psycopg2 import sql
 from psycopg2.errors import IntegrityError
 
-from dbconnect import DatabaseConnection
-from utils import (
-    recreate_stockcount_monthly_view,
-    recreate_stockcount_purchases_view,
-    recreate_stockcount_sales_view,
-    recreate_stockcount_waste_view,
-    recreate_stockcount_conversion_view,
-)
+from db_utils.dbconnect import DatabaseConnection
+from db_utils.recreate_views import recreate_all_views
 
 
 def get_conversion_units():
@@ -138,8 +132,4 @@ if __name__ == "__main__":
         df = get_conversion_units()
         df = add_name_column(df, db.engine)
         write_to_database(df, db.cur, db.conn, db.engine)
-        recreate_stockcount_sales_view(db.conn)
-        recreate_stockcount_waste_view(db.conn)
-        recreate_stockcount_purchases_view(db.conn)
-        recreate_stockcount_monthly_view(db.conn)
-        recreate_stockcount_conversion_view(db.conn)
+        recreate_all_views(db.conn)

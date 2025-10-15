@@ -4,7 +4,7 @@ Track purchases of selected items and create spreadsheet
 
 import pandas as pd
 
-from dbconnect import DatabaseConnection
+from db_utils.dbconnect import DatabaseConnection
 
 
 def get_file_path():

@@ -8,5 +8,7 @@ dependencies = [
   "sqlalchemy",
   "numpy",
   "openpyxl",
-  "icecream"
+  "icecream",
+  "xlsxwriter>=3.2.5",
+  "tqdm>=4.67.1",
 ]

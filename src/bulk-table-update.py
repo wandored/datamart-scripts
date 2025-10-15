@@ -11,8 +11,8 @@ from psycopg2 import IntegrityError, sql
 from psycopg2.extras import execute_values
 from tqdm import tqdm
 
-from config import Config
-from dbconnect import DatabaseConnection
+from db_utils.config import Config
+from db_utils.dbconnect import DatabaseConnection
 
 
 def fetch_calendar_dates(conn, cur, **kwargs):
@@ -556,10 +556,10 @@ def update_sales_payment(start, end, cur, conn, engine):
 
 def main(start_date, end_date, step, cur, conn, engine):
     update_function = [
-        # update_transaction,
-        # update_transaction_detail,
+        update_transaction,
+        update_transaction_detail,
         update_labor_detail,
-        # update_sales_detail,
+        update_sales_detail,
         update_sales_employee,
         update_sales_payment,
     ]

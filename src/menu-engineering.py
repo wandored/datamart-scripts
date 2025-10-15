@@ -11,6 +11,8 @@ import openpyxl
 import pandas as pd
 from openpyxl.styles import NamedStyle
 
+pd.set_option("future.no_silent_downcasting", True)
+
 
 def removedups(x):
     """Turn the list into a dict then back to a list to remove duplicates"""
@@ -378,7 +380,7 @@ def main(product_mix_csv, menu_analysis_csv, sort_unit):
             df_none.loc[:, columns_to_fill_none].fillna("None").astype(str)
         )
         # # # Fill NaN values in all other columns with 0
-        df_none = df_none.fillna(0)
+        df_none = df_none.fillna(0).infer_objects(copy=False)
 
         if not df_none.empty:
             df_nonetab = pd.concat([df_nonetab, df_none])
@@ -386,9 +388,7 @@ def main(product_mix_csv, menu_analysis_csv, sort_unit):
         # drop nan from cat2_list
         cat2_list = [x for x in cat2_list if str(x) != "nan"]
 
-        with pd.ExcelWriter(
-            f"{directory}/{store}.xlsx"
-        ) as writer:  # pylint: disable=abstract-class-instantiated
+        with pd.ExcelWriter(f"{directory}/{store}.xlsx") as writer:  # pylint: disable=abstract-class-instantiated
             for cat in cat2_list:
                 df = menucatagory(cat, df_menu)
                 df = engineer(df)
@@ -421,11 +421,10 @@ def main(product_mix_csv, menu_analysis_csv, sort_unit):
         print("No items to add")
     df_nonetab = df_nonetab.groupby(["MenuItem"]).sum(numeric_only=True)
     df_nonetab.sort_values(by=sort_unit, inplace=True, ascending=False)
+    # clear screan
+    os.system("clear")
+    print("Items not in a menu category")
     print(df_nonetab.head(25))
-    print()
-    print("--------------------------------------------------------------------")
-    print(df_nonetab.info())
-    print(df_nonetab.describe())
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ Collection of utilities and scripts used to manage and update DataMart tables
 * ingredients.csv
 * menu_items.csv
 * prep_recipes.csv
+* wine_vendor_items.csv (archived script)
 * Receiving by Purchased Item.csv (item specific)
 
 ### Toast Files:
@@ -23,35 +24,74 @@ Collection of utilities and scripts used to manage and update DataMart tables
 * fiscal_calendar_2024.csv
 
 ## Utility Files:
-* config.py
-* dbconnect.py
-* utils.py
-* specialty.txt
+* config.py # configuration settings
+* dbconnect.py # database connection utility
+* recreate_views.py # recreates views in datamart
+* specialty.txt # list of specialty items to exclude from menu engineering
 
-## Scripts
-* **budget-update.py**
-  * This script reads budget data from CSV files, processes it into a structured format, and writes the processed data to a PostgreSQL database. It extracts budget values for different periods, normalizes the data, and updates the database while handling conflicts.
-* **calendar-update.py**
-  * This script automates the creation of a new fiscal calendar for the following year based on an existing fiscal calendar. It processes the data from a CSV file, updates the dates, and writes the updated calendar to both a new CSV file and a PostgreSQL database.
-* **item-conversion-update.py**
-  * This script reads data from (`PurchaseItems.csv`), processes it by renaming columns for consistency, and then writes the data into table named `item_conversion`.
-* **item-price-check.py**
-  * A script to analyze and compare menu item prices and recipe costs across locations.
-* **menu-engineering-online.py**
-  * Import sales mix and export menu engineering report to an excel table for online view.
-* **menu-engineering.py**
-  * This script processes restaurant menu data from CSV files, performs menu engineering analysis, and formats the results into an Excel report.
-* **menu-item-mapping.py**
-  * Utility used to check for Menu Items not mapped in R365 from Toast POS
-* **odata_table_update.py**
-  * Updates the smaller tables that rarely change
-* **receiving-by-purchased-item.py**
-  * Track purchases of select items in the receiving by purchased items report.  Sorting Products and Vendors and calculating totals for each.
-* **recipe-ingredient-update.py**
-  * ingredient-update processes recipe ingredient data and stores it in a PostgreSQL database. It reads data from CSV files, transforms it, and updates the database with the processed data. The script is designed to work with menu items and their corresponding recipes, filtering specific menu types, and adjusting ingredient quantities based on units of measure.
-* **sales-check.py**
-  * This utility-script is used to check that sales are pulling for all locations.
-* **unlinked-recipes.py**
-  * Identify all item, prep_recipes and menu_recipes not linked to an active menu_item
-* **uofm-update.py**
-  * Upload R365 units of measure to datamart
+## Running scripts
+- scripts can be run from the command line using:
+python -m src.<script_name>
+
+## Script Descriptions
+| Script                             | Description                                                                                                           |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **budget-update.py**               | Reads budget data from CSV files, processes it, and writes it to PostgreSQL. Normalizes values and handles conflicts. |
+| **calendar-update.py**             | Generates a new fiscal calendar for the next year, saving to both CSV and the database.                               |
+| **item-conversion-update.py**      | Normalizes and uploads `PurchaseItems.csv` data to the `item_conversion` table.                                       |
+| **menu-engineering-online.py**     | Imports sales mix data and exports menu engineering results for online view.                                          |
+| **menu-engineering.py**            | Performs menu engineering analysis on R365/Toast data and outputs an Excel report.                                    |
+| **menu-item-mapping.py**           | Checks for unmapped menu items in R365 vs Toast POS.                                                                  |
+| **odata-table-update.py**          | Updates static/small tables that rarely change.                                                                       |
+| **receiving-by-purchased-item.py** | Tracks purchases and vendor totals for selected items.                                                                |
+| **recipe-ingredient-update.py**    | Processes recipe ingredient data and updates PostgreSQL with cost and recipe relationships.                           |
+| **uofm-update.py**                 | Uploads units of measure from R365 data.                                                                              |
+
+
+## Maintenance
+- Legacy scripts are in /.archive/
+- Views are version-controlled in /db_utils/views/ and can be edited safely
+- Add new SQL views by placing a .sql file in /db_utils/views/ — they’ll be recreated automatically
+
+## Developer Notes
+### Adding a New SQL View
+1. Create a new .sql file in db_utils/views/, named after the view you want to create.
+-   Example: stockcount_sales_summary_view.sql
+2. Write a standard CREATE OR REPLACE VIEW statement inside the file:
+```sql
+CREATE OR REPLACE VIEW stockcount_sales_summary_view AS
+SELECT category, SUM(total_sales) AS total_sales
+FROM stockcount_sales
+GROUP BY category;
+```
+3. Run any update script (or call recreate_all_views() directly) to apply it:
+```python
+python -m src.recipe-ingredient-update
+```
+### Adding a New Update Script
+Create a new .py file in src/, for example:
+```python
+# src/my_new_update_script.py
+```
+2. Follow this pattern:
+```python
+from db_utils.dbconnect import DatabaseConnection
+from db_utils.recreate_views import recreate_all_views
+
+def vendor_update(cur, conn, engine):
+    # Your ETL or update logic here
+    pass
+
+if __name__ == "__main__":
+    with DatabaseConnection() as db:
+        vendor_update(db.cur, db.conn, db.engine)
+        recreate_all_views(db.conn)
+```
+3. Run it from the command line:
+```python
+python -m src.my_new_update_script
+```
+This ensures:
+- consistent database connections
+- automatic view recreation
+- and a modular, maintainable workflow

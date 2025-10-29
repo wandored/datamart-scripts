@@ -94,7 +94,6 @@ def write_to_database(df, cur, conn, engine):
     table_name = "item_conversion"
     temp_table_name = "temp_table"
     try:
-        print(df.info())
         df.to_sql(temp_table_name, engine, if_exists="replace", index=False)
         update_query = sql.SQL(
             """

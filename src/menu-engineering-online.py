@@ -235,8 +235,12 @@ def main(product_mix_csv, menu_analysis_csv, date, year, period, engine, conn, c
     )
     # menu_engineering = engineer(menu_engineering)
     # menu_engineering["rating"] = menu_engineering.apply(rating, axis=1)
-    # print all rows with null values
-    print(menu_engineering[menu_engineering.isnull().any(axis=1)].head(50))
+    # Print rows with null values (up to 50 for readability)
+    if hasattr(menu_engineering, "isnull") and hasattr(menu_engineering, "any"):
+        null_rows = menu_engineering[menu_engineering.isnull().any(axis=1)]
+        if not null_rows.empty:
+            print(null_rows.head(50))
+
     menu_engineering = menu_engineering.dropna()
 
     table_name = "menu_engineering"

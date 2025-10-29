@@ -15,7 +15,5 @@ def recreate_all_views(conn, views_dir=None):
                 sql = f.read().strip()
                 if not sql:
                     continue
-                print(f"Recreating view: {sql_file.stem}")
                 cursor.execute(sql)
     conn.commit()
-    print("✅ All views successfully recreated.")

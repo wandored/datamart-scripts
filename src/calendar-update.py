@@ -5,6 +5,7 @@ updates the dates, and writes the updated calendar to both a new CSV file and a 
 """
 
 import pandas as pd
+import argparse
 from datetime import datetime, timedelta
 from db_utils.dbconnect import DatabaseConnection
 from db_utils.recreate_views import recreate_all_views
@@ -24,12 +25,10 @@ def increment_date(date_str):
         return date_str
 
 
-def create_new_year():
+def create_new_year(year):
     # Read the CSV file
-    input_file = (
-        "./downloads/current_fiscal_calendar.csv"  # Replace with your file path
-    )
-    output_file = "./output/new_fiscal_calendar.csv"
+    input_file = "./downloads/fiscal_calendar.csv"  # Replace with your file path
+    output_file = f"./output/fiscal_calendar_{year}.csv"
 
     df = pd.read_csv(input_file)
 
@@ -51,7 +50,7 @@ def create_new_year():
             df[col] = df[col].apply(increment_date)
 
     # change year to 2025
-    df["year"] = 2025
+    df["year"] = 2026
     # Save the updated dataframe to a new CSV file
     df.to_csv(output_file, index=False)
 
@@ -60,7 +59,7 @@ def create_new_year():
 
 def write_to_database(conn, engine):
     # Read the CSV file
-    input_file = "fiscal_calendar_2025.csv"  # Replace with your file path
+    input_file = "output/fiscal_calendar_2026.csv"  # Replace with your file path
     df = pd.read_csv(input_file)
     new_year = pd.read_csv(input_file)
     date_columns = [
@@ -92,7 +91,19 @@ def write_to_database(conn, engine):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Create a new fiscal calendar for the following year."
+    )
+    parser.add_argument(
+        "--year",
+        type=int,
+        required=True,
+        help="The fiscal year to base the new calendar on (e.g., 2025).",
+    )
+    args = parser.parse_args()
+    year = args.year
+
     with DatabaseConnection() as db:
-        create_new_year()
+        # create_new_year(year)
         write_to_database(db.conn, db.engine)
-        recreate_all_views(db.conn)
+        # recreate_all_views(db.conn)

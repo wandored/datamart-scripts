@@ -63,69 +63,36 @@ def menucatagory(catg, df_menu):
 
 
 def removeSpecial(df):
-    """Removes specialty items from the dataframes"""
-    with open("./specialty.txt") as file:
-        specialty_patterns = file.read().split("\n")
+    """Removes specialty items from the dataframe"""
+    try:
+        with open("./specialty.txt") as file:
+            specialty_patterns = [line.strip() for line in file if line.strip()]
+    except FileNotFoundError:
+        specialty_patterns = []
 
-    for pattern in specialty_patterns:
-        df = df.drop(df[df.MenuItem == pattern].index)
+    # Remove exact matches
+    if specialty_patterns:
+        df = df[~df.MenuItem.isin(specialty_patterns)]
 
-    # with open("./regex_list.txt") as file:
-    #     regex_patterns = file.read().split("\n")
-
-    # Print the regex patterns and the number of rows in df
-    #    print("Regex patterns:", regex_patterns)
-    #    print("Number of rows in df:", len(df))
-    #    pause = input("Press enter to continue")
-
-    #    for pattern in regex_patterns:
-    #        print("current pattern:", pattern)
-    #        df = df.drop(df[df.MenuItem.str.contains(f'{pattern}', na=False, regex=True)].index)
-    #        print("Number of matched rows:", len(df[df.MenuItem.str.contains(f'{pattern}', na=False, regex=True)]))
-
-    df = df.drop(df[df.MenuItem.str.contains(r"^No ", na=False, regex=True)].index)
-    df = df.drop(df[df.MenuItem.str.contains(r" Only$", na=False, regex=True)].index)
-    df = df.drop(df[df.MenuItem.str.contains(r"^& ", na=False, regex=True)].index)
-    df = df.drop(df[df.MenuItem.str.contains(r"^Seat ", na=False, regex=True)].index)
-    df = df.drop(df[df.MenuItem.str.contains(r"Allergy$", na=False, regex=True)].index)
-    df = df.drop(
-        df[df.MenuItem.str.contains(r"for Salad.*", na=False, regex=True)].index
-    )
-    df = df.drop(
-        df[df.MenuItem.str.contains(r".*for Steak.*", na=False, regex=True)].index
-    )
-    df = df.drop(
-        df[df.MenuItem.str.contains(r".*for Sand.*", na=False, regex=True)].index
-    )
-    df = df.drop(
-        df[df.MenuItem.str.contains(r".*for Taco.*", na=False, regex=True)].index
-    )
-    df = df.drop(
-        df[df.MenuItem.str.contains(r".*for Cali-Club.*", na=False, regex=True)].index
-    )
-    df = df.drop(
-        df[df.MenuItem.str.contains(r".*for Edge.*", na=False, regex=True)].index
-    )
-    df = df.drop(
-        df[df.MenuItem.str.contains(r".*See Server.*", na=False, regex=True)].index
-    )
-    df = df.drop(
-        df[df.MenuItem.str.contains(r".*Refund.*", na=False, regex=True)].index
-    )
-    df = df.drop(
-        df[df.MenuItem.str.contains(r".*2 Pens.*", na=False, regex=True)].index
-    )
-    df = df.drop(
-        df[df.MenuItem.str.contains(r".*Anniversary.*", na=False, regex=True)].index
-    )
-    df = df.drop(
-        df[df.MenuItem.str.contains(r".*Birthday.*", na=False, regex=True)].index
-    )
-    df = df.drop(df[df.MenuItem.str.contains(r".*Rare.*", na=False, regex=True)].index)
-    df = df.drop(
-        df[df.MenuItem.str.contains(r".*Medium.*", na=False, regex=True)].index
-    )
-    df = df.drop(df[df.MenuItem.str.contains(r".*Well.*", na=False, regex=True)].index)
+    # Combine all regex patterns into one
+    regex_patterns = [
+        r"^No ",
+        r" Only$",
+        r"^& ",
+        r"^Seat ",
+        r"Allergy$",
+        r"for Salad.*",
+        r".*for Steak.*",
+        r".*for Sand.*",
+        r".*for Taco.*",
+        r".*for Cali-Club.*",
+        r".*for Edge.*",
+        r".*See Server.*",
+        r".*Refund.*",
+        r".*2 Pens.*",
+    ]
+    combined_pattern = "|".join(f"(?:{pat})" for pat in regex_patterns)
+    df = df[~df.MenuItem.str.contains(combined_pattern, na=False, regex=True)]
 
     return df
 

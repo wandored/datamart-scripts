@@ -73,6 +73,7 @@ Extra Plate
 Extra Plate/Bowl/Utensil
 Extra Salt Rim
 Extra Sliced
+Extra-Dressing
 Female
 Filthy
 First Round
@@ -201,6 +202,7 @@ Tip
 Toasted On Side
 Tonic
 Tonic Water
+Topping on Dessert
 Topping on Side
 Two Plates
 Two Platters

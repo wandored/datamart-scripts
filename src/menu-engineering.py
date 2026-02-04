@@ -90,6 +90,7 @@ def removeSpecial(df):
         r".*See Server.*",
         r".*Refund.*",
         r".*2 Pens.*",
+        # r"Catering$",
     ]
     combined_pattern = "|".join(f"(?:{pat})" for pat in regex_patterns)
     df = df[~df.MenuItem.str.contains(combined_pattern, na=False, regex=True)]

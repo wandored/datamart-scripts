@@ -25,5 +25,5 @@ FROM transaction_detail td
  JOIN calendar c ON c.date = date(t.date)
  JOIN unitsofmeasure um ON um.name = td.unitofmeasurename
  JOIN item_conversion ic ON ic.name = i.name
-WHERE t.type = 'Stock Count'::text AND i.category2 = 'Beef'::text AND date(t.date) >= (CURRENT_DATE - '1 year'::interval)
+WHERE t.type = 'Stock Count'::text AND i.category2 in('Beef', 'Pork', 'Seafood') AND date(t.date) >= (CURRENT_DATE - '1 year'::interval)
 ORDER BY (date(t.date)) DESC, r.name, i.name;

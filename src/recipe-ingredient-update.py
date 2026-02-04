@@ -31,12 +31,12 @@ def get_recipe_ingredient() -> pd.DataFrame:
 
 
 def get_prep_recipes() -> pd.DataFrame:
-    df = pd.read_csv(
-        "./downloads/prep_recipes.csv",
-        usecols=["Name", "YieldUofM", "YieldQty"],
-    )
+    df = pd.read_csv("./downloads/RecipeItems.csv")
+    # remove all rows where Category 1 is not "Prep Recipe"
+    df = df[df["Category 1"] == "Prep Recipe"]
+    df = df[["Name", "Yield UofM", "Yield Qty"]]
     df.rename(
-        columns={"Name": "recipe", "YieldUofM": "uofm", "YieldQty": "quantity"},
+        columns={"Name": "recipe", "Yield UofM": "uofm", "Yield Qty": "quantity"},
         inplace=True,
     )
     return df
@@ -108,14 +108,16 @@ def calculate_menu_cost(row):
 
 
 def get_menu_recipe():
-    df = pd.read_csv("./downloads/menu_items.csv", usecols=["Name", "Recipe"])
-    # remove all rows that don't have "Steakhouse" or "Casual"
-    df = df[df["Name"].str.contains("Steakhouse") | df["Name"].str.contains("Casual")]
+    df = pd.read_csv("./downloads/MenuItems_R365.csv")
+    # drop all rows where Category 1 is null
+    df.dropna(subset=["Category 1"], inplace=True)
+    # keep only Name and Recipe columns
+    df = df[["Name", "Recipe"]]
     # split Name column into two columns
     df[["concept", "menu_item"]] = df["Name"].str.split(" - ", expand=True)
-    # df["Name"] = df["Name"].str.replace("Steakhouse - ", "")
-    # df["Name"] = df["Name"].str.replace("Casual - ", "")
     df.rename(columns={"Recipe": "recipe"}, inplace=True)
+    print(df.head(25))
+    print(df.columns)
     return df
 
 

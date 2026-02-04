@@ -33,6 +33,7 @@ def calculate_bread_basket(df, cur):
     stores_w_bread = (4, 9, 11, 15, 16, 17)
     df_bread = df[(df["store_id"].isin(stores_w_bread)) & (df["category2"] == "Entree")]
     for store in stores_w_bread:
+        print(store)
         cur.execute("SELECT name FROM restaurants WHERE id = %s", (store,))
         store_name = cur.fetchone()[0]
         bread_str = r"Bread.*Basket"

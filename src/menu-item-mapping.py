@@ -28,8 +28,8 @@ def main():
     )
 
     r365_menu_items = pd.read_csv(
-        "./downloads/menu_items_export_r365.csv",
-        usecols=["Name", "Category1", "Category2", "Category3"],
+        "./downloads/MenuItems_R365.csv",
+        usecols=["Name", "Category 1", "Category 2", "Category 3"],
         encoding="ISO-8859-1",
     )
     # drop all rows that do not have "Casual" or "Steakhouse" in Name column
@@ -45,7 +45,7 @@ def main():
     )
     # remove rows with any value in Category1, Category2 or Category3 columns from r365_menu_items
     unmapped_menu_items = r365_menu_items[
-        r365_menu_items[["Category1", "Category2", "Category3"]].isnull().all(axis=1)
+        r365_menu_items[["Category 1", "Category 2", "Category 3"]].isnull().all(axis=1)
     ]
 
     # compare the Name columns in both files and drop rows from MenuItem_Export that are in unmapped_menu_items
@@ -78,6 +78,7 @@ def main():
     new_menu_items = new_menu_items[~new_menu_items["Name"].str.endswith("for Steak")]
     new_menu_items = new_menu_items[~new_menu_items["Name"].str.endswith("for Sand")]
     new_menu_items = new_menu_items[~new_menu_items["Name"].str.endswith("for Taco")]
+    new_menu_items = new_menu_items[~new_menu_items["Name"].str.endswith(" Catering")]
     new_menu_items = new_menu_items[
         ~new_menu_items["Name"].str.endswith("for Cali-Club")
     ]

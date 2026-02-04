@@ -3,21 +3,17 @@ Collection of utilities and scripts used to manage and update DataMart tables
 
 ## File downloads:
 ### Restaurant365 Files:
-* menu_items_export_r365.csv
+* MenuItems_R365.csv
 * Menu Price Analysis.csv
 * Product Mix.csv
 * PurchaseItems.csv
 * RecipeItems.csv
 * UnitOfMeasure.csv
 * ingredients.csv
-* menu_items.csv
-* prep_recipes.csv
-* wine_vendor_items.csv (archived script)
 * Receiving by Purchased Item.csv (item specific)
 
 ### Toast Files:
 * MenuItem_Export_toast.csv
-* MenuItem_Export-no-mods.csv
 
 ### Company Files:
 * budgets/*.csv (store budgets)

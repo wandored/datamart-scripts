@@ -46,7 +46,7 @@ def read_budget_files():
         var_name="period",
         value_name="amount",
     )
-    df_pivot["period"] = df_pivot["period"].str.extract("(\d+)")
+    df_pivot["period"] = df_pivot["period"].str.extract(r"(\d+)")
     df_pivot["year"] = df_pivot["year"].astype(int)
     df_pivot["period"] = df_pivot["period"].astype(int)
 
@@ -138,7 +138,7 @@ def process_budgets_xlsx(folder_path, output_path, year):
     df_pivot["period"] = df_pivot["period"].astype(int)
     df_pivot["year"] = df_pivot["year"].astype(int)
 
-    Save to CSV
+    # Save to CSV
     df_pivot.to_csv(f"{output_path}/{year}budgets.csv", index=False)
     """
     After writing file, it may be necessary to edit the location names manually
@@ -148,8 +148,10 @@ def process_budgets_xlsx(folder_path, output_path, year):
 
 
 def write_to_database(cur, conn, engine, output_path, year):
-    df = pd.read_csv(f"{output_path}/{year}budgets.csv", encoding="utf-7")
-    df_restaurants = pd.read_sql("SELECT locationid, name FROM restaurants", db.conn)
+    df = pd.read_csv(f"{output_path}/{year}budgets.csv", encoding="utf-8")
+    df_restaurants = pd.read_sql(
+        "SELECT locationid, name FROM restaurants WHERE email IS NOT NULL", conn
+    )
 
     # Join on name
     df_merged = df.merge(df_restaurants, how="left", on="name")

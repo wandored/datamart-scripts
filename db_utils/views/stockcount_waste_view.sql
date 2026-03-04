@@ -1,4 +1,5 @@
-CREATE OR REPLACE VIEW stockcount_waste AS
+DROP VIEW IF EXISTS stockcount_waste;
+CREATE VIEW stockcount_waste AS
 SELECT sc.date,
     sc.dow,
     sc.week,

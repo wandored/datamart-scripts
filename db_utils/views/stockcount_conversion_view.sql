@@ -1,4 +1,5 @@
-CREATE OR REPLACE VIEW public.stockcount_conversion
+DROP VIEW IF EXISTS public.stockcount_conversion;
+CREATE VIEW public.stockcount_conversion
 AS
 SELECT date(t.date) AS date,
     c.dow,

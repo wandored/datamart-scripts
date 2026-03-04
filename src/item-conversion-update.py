@@ -32,7 +32,7 @@ def get_conversion_units():
             "Measure Type",
         ],
     )
-    PurchaseItems.rename(
+    PurchaseItems = PurchaseItems.rename(
         columns={
             "ID": "itemid",
             "Name": "name",
@@ -44,7 +44,6 @@ def get_conversion_units():
             "Each UofM": "each_uofm",
             "Measure Type": "measure_type",
         },
-        inplace=True,
     )
     RecipeItems = pd.read_csv(
         "./downloads/RecipeItems.csv",
@@ -60,7 +59,7 @@ def get_conversion_units():
             "Measure Type",
         ],
     )
-    RecipeItems.rename(
+    RecipeItems = RecipeItems.rename(
         columns={
             "ID": "itemid",
             "Name": "name",
@@ -72,7 +71,6 @@ def get_conversion_units():
             "Each UofM": "each_uofm",
             "Measure Type": "measure_type",
         },
-        inplace=True,
     )
     df = pd.concat([PurchaseItems, RecipeItems], ignore_index=True)
 

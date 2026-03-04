@@ -1,4 +1,5 @@
-CREATE OR REPLACE VIEW stockcount_purchases AS
+DROP VIEW IF EXISTS stockcount_purchases;
+CREATE VIEW stockcount_purchases AS
 SELECT p.transactionid,
     p.date,
     p.dow,

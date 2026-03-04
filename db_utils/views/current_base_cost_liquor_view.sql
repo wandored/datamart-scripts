@@ -1,4 +1,5 @@
-CREATE OR REPLACE VIEW public.current_base_cost_liquor
+DROP VIEW IF EXISTS public.current_base_cost_liquor;
+CREATE VIEW public.current_base_cost_liquor
  AS
  WITH ranked AS (
          SELECT r.id AS store_id,

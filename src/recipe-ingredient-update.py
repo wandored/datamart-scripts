@@ -5,10 +5,11 @@ The script is designed to work with menu items and their corresponding recipes,
 filtering specific menu types, and adjusting ingredient quantities based on units of measure.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 from psycopg2.errors import IntegrityError
+from collections import defaultdict
 
 from db_utils.dbconnect import DatabaseConnection
 from db_utils.recreate_views import recreate_all_views
@@ -18,14 +19,13 @@ def get_recipe_ingredient() -> pd.DataFrame:
     df = pd.read_csv(
         "./downloads/ingredients.csv", usecols=["Item", "Recipe", "Qty", "UofM"]
     )
-    df.rename(
+    df = df.rename(
         columns={
             "Item": "ingredient",
             "Recipe": "recipe",
             "Qty": "qty",
             "UofM": "uofm",
         },
-        inplace=True,
     )
     return df
 
@@ -35,9 +35,8 @@ def get_prep_recipes() -> pd.DataFrame:
     # remove all rows where Category 1 is not "Prep Recipe"
     df = df[df["Category 1"] == "Prep Recipe"]
     df = df[["Name", "Yield UofM", "Yield Qty"]]
-    df.rename(
+    df = df.rename(
         columns={"Name": "recipe", "Yield UofM": "uofm", "Yield Qty": "quantity"},
-        inplace=True,
     )
     return df
 
@@ -51,9 +50,8 @@ def get_uofm(cur) -> pd.DataFrame:
     )
     uofm = cur.fetchall()
     df = pd.DataFrame(uofm, columns=["name", "base_uofm", "base_qty"])
-    df.rename(
+    df = df.rename(
         columns={"name": "uofm", "base_uofm": "base_uofm", "base_qty": "base_qty"},
-        inplace=True,
     )
     return df
 
@@ -79,7 +77,7 @@ def get_item_conversion(cur) -> pd.DataFrame:
             "measure_type",
         ],
     )
-    df.rename(columns={"name": "ingredient"}, inplace=True)
+    df = df.rename(columns={"name": "ingredient"})
     return df
 
 
@@ -110,21 +108,193 @@ def calculate_menu_cost(row):
 def get_menu_recipe():
     df = pd.read_csv("./downloads/MenuItems_R365.csv")
     # drop all rows where Category 1 is null
-    df.dropna(subset=["Category 1"], inplace=True)
+    df = df.dropna(subset=["Category 1"])
     # keep only Name and Recipe columns
     df = df[["Name", "Recipe"]]
     # split Name column into two columns
     df[["concept", "menu_item"]] = df["Name"].str.split(" - ", expand=True)
-    df.rename(columns={"Recipe": "recipe"}, inplace=True)
-    print(df.head(25))
-    print(df.columns)
+    df = df.rename(columns={"Recipe": "recipe"})
     return df
 
 
-def ingredient_update(cur, conn, engine) -> None:
+def ingredient_update_flat(cur, conn, engine) -> pd.DataFrame:
     recipe_ingredient = get_recipe_ingredient()
     uofm = get_uofm(cur)
     menu_recipe = get_menu_recipe()
+    recipe_items = get_prep_recipes()
+
+    # Normalize names same way as recipe column
+    recipe_items["recipe"] = recipe_items["recipe"].str.strip()
+    recipe_names = set(
+        recipe_items["recipe"].unique()
+    )  # for quick lookup during recursion
+
+    # Merge with UOFM to convert yield to base
+    recipe_items = recipe_items.merge(
+        uofm,
+        left_on="uofm",
+        right_on="uofm",
+        how="left",
+    )
+
+    recipe_items["yield_base_qty"] = recipe_items["quantity"] * recipe_items["base_qty"]
+
+    recipe_yield_map = dict(zip(recipe_items["recipe"], recipe_items["yield_base_qty"]))
+
+    # ---------------------------------------------------------
+    # 1️⃣ Convert all recipe quantities to base UOFM
+    # ---------------------------------------------------------
+
+    recipe_ingredient = recipe_ingredient.merge(uofm, on="uofm", how="left")
+    recipe_ingredient["qty"] = recipe_ingredient["qty"] * recipe_ingredient["base_qty"]
+
+    recipe_ingredient = recipe_ingredient.drop(columns=["uofm", "base_qty"])
+    recipe_ingredient = recipe_ingredient.rename(columns={"base_uofm": "uofm"})
+
+    # ---------------------------------------------------------
+    # 2 Build recipe graph for recursion
+    # ---------------------------------------------------------
+
+    recipe_map = defaultdict(list)
+
+    for _, row in recipe_ingredient.iterrows():
+        recipe_map[row["recipe"]].append(
+            {
+                "ingredient": row["ingredient"],
+                "qty": row["qty"],
+                "uofm": row["uofm"],
+            }
+        )
+
+    # ---------------------------------------------------------
+    # 4️⃣ Recursive PREP explosion
+    # ---------------------------------------------------------
+
+    def explode_recipe(recipe_name, multiplier=1.0, visited=None):
+        if visited is None:
+            visited = set()
+
+        if recipe_name in visited:
+            raise ValueError(f"Circular recipe detected: {recipe_name}")
+
+        visited.add(recipe_name)
+
+        components = recipe_map.get(recipe_name, [])
+        results = []
+
+        # Get yield (default = 1 if missing)
+        recipe_yield = recipe_yield_map.get(recipe_name, 1.0)
+
+        for comp in components:
+            ingredient = comp["ingredient"]
+            qty = comp["qty"]
+            uofm = comp["uofm"]
+
+            # 🔹 Adjust for yield
+            effective_multiplier = multiplier * (qty / recipe_yield)
+
+            if ingredient in recipe_names:
+                results.extend(
+                    explode_recipe(
+                        ingredient,
+                        multiplier=effective_multiplier,
+                        visited=visited.copy(),
+                    )
+                )
+            else:
+                results.append(
+                    {
+                        "ingredient": ingredient,
+                        "qty": effective_multiplier,
+                        "uofm": uofm,
+                    }
+                )
+
+        return results
+
+    # ---------------------------------------------------------
+    # 3 Attach concept + primary menu item
+    # ---------------------------------------------------------
+
+    recipe_ingredient = recipe_ingredient.merge(menu_recipe, on="recipe", how="left")
+
+    recipe_ingredient = recipe_ingredient[recipe_ingredient["concept"].notna()]
+
+    # ---------------------------------------------------------
+    # 5️⃣ Explode only MENU recipes
+    # ---------------------------------------------------------
+
+    flattened_rows = []
+
+    # menu_rows = recipe_ingredient[~recipe_ingredient["recipe"].str.startswith("PREP ")]
+    menu_recipes = recipe_ingredient[
+        ~recipe_ingredient["recipe"].str.startswith("PREP ")
+    ][["concept", "menu_item", "recipe"]].drop_duplicates()
+
+    for _, row in menu_recipes.iterrows():
+        concept = row["concept"]
+        menu_item = row["menu_item"]
+        recipe_name = row["recipe"]
+
+        exploded = explode_recipe(recipe_name)
+
+        for comp in exploded:
+            flattened_rows.append(
+                {
+                    "concept": concept,
+                    "menu_item": menu_item,
+                    "recipe": recipe_name,
+                    "ingredient": comp["ingredient"],
+                    "qty": comp["qty"],
+                    "uofm": comp["uofm"],
+                }
+            )
+
+    flat_df = pd.DataFrame(flattened_rows)
+
+    # ---------------------------------------------------------
+    # 6️⃣ Aggregate duplicate ingredients
+    # ---------------------------------------------------------
+
+    flat_df = flat_df.groupby(
+        ["concept", "menu_item", "recipe", "ingredient", "uofm"],
+        as_index=False,
+    ).sum()
+
+    flat_df = flat_df.sort_values(by=["concept", "menu_item", "ingredient"])
+
+    # ---------------------------------------------------------
+    # 7️⃣ Write to database
+    # ---------------------------------------------------------
+
+    try:
+        cur.execute('truncate table "recipe_ingredients_flat"')
+        conn.commit()
+        flat_df.to_sql(
+            "recipe_ingredients_flat",
+            engine,
+            index=False,
+            if_exists="append",
+        )
+    except Exception:
+        conn.rollback()
+        try:
+            flat_df.to_sql(
+                "recipe_ingredients_flat",
+                engine,
+                index=False,
+                if_exists="replace",
+            )
+        except Exception as e:
+            print("Error writing to database:", e)
+
+    return flat_df
+
+
+def ingredient_update(cur, conn, engine) -> pd.DataFrame:
+    recipe_ingredient = pd.DataFrame(get_recipe_ingredient())
+    uofm = pd.DataFrame(get_uofm(cur))
+    menu_recipe = pd.DataFrame(get_menu_recipe())
 
     # replace prep recipe with purchase item
     recipe_ingredient["ingredient"] = recipe_ingredient["ingredient"].replace(
@@ -139,70 +309,47 @@ def ingredient_update(cur, conn, engine) -> None:
         },
         # Add more replacements
     )
-
     recipe_ingredient = recipe_ingredient.merge(uofm, on="uofm", how="left")
     recipe_ingredient = recipe_ingredient.merge(menu_recipe, on="recipe", how="left")
     recipe_ingredient["qty"] = recipe_ingredient["qty"] * recipe_ingredient["base_qty"]
-    recipe_ingredient.drop(columns=["uofm", "base_qty"], inplace=True)
-    recipe_ingredient.rename(columns={"base_uofm": "uofm"}, inplace=True)
+    recipe_ingredient = recipe_ingredient.drop(columns=["uofm", "base_qty"])
+    recipe_ingredient = recipe_ingredient.rename(columns={"base_uofm": "uofm"})
     recipe_ingredient = recipe_ingredient[
         ["concept", "menu_item", "recipe", "ingredient", "qty", "uofm"]
     ]
-    recipe_ingredient.sort_values(
-        by=["concept", "menu_item", "recipe", "ingredient"], inplace=True
+    recipe_ingredient = recipe_ingredient.sort_values(
+        by=["concept", "menu_item", "recipe", "ingredient"]
     )
     # drop all items where concept is null
-    recipe_ingredient = recipe_ingredient[recipe_ingredient["concept"].notnull()]
+    recipe_ingredient = recipe_ingredient[recipe_ingredient["concept"].notna()]
 
-    # drop table if exists
-    cur.execute('drop table if exists "recipe_ingredients" cascade')
-    conn.commit()
-    # update database with table
+    # truncate table and re-insert to preserve table structure and constraints
     try:
-        recipe_ingredient.to_sql("recipe_ingredients", engine, index=False)
+        cur.execute('truncate table "recipe_ingredients"')
         conn.commit()
-    except IntegrityError:
-        print("Error writing to database: IntegrityError")
-    except Exception as e:
-        print("Error writing to database:", e)
+        recipe_ingredient.to_sql(
+            "recipe_ingredients", engine, index=False, if_exists="append"
+        )
+    except Exception:
+        conn.rollback()
+        # table may not exist yet; create it
+        try:
+            recipe_ingredient.to_sql(
+                "recipe_ingredients", engine, index=False, if_exists="replace"
+            )
+        except IntegrityError:
+            print("Error writing to database: IntegrityError")
+        except Exception as e:
+            print("Error writing to database:", e)
 
-    with open("/home/wandored/Sync/ReportData/recipe_ingredients.csv", "w") as f:
-        recipe_ingredient.to_csv(f, index=False)
+    recipe_ingredient.to_csv(
+        "/home/wandored/Sync/ReportData/recipe_ingredients.csv", index=False
+    )
 
     return recipe_ingredient
 
 
-def update_ingredient_cost(cur, conn, engine, recipes) -> pd.DataFrame:
-    """
-    Updates the ingredient cost information in the database by calculating the base cost for both individual
-    ingredients and prepared recipes, and then stores the data in a new 'ingredient_cost' table.
-
-    This function performs the following steps:
-    1. Retrieves a list of unique recipes that start with "PREP " from the `recipes` table.
-    2. Queries the database to get the latest purchase data for each item, calculating the base cost based on the unit of measure.
-    3. For each prepared recipe, calculates the total cost by summing up the costs of its ingredients.
-    4. Merges the calculated costs with recipe and unit of measure data to determine the base cost for each prepared recipe.
-    5. Combines the prepared recipe costs with the individual ingredient costs into a single DataFrame.
-    6. Drops the existing 'ingredient_cost' table from the database, if it exists.
-    7. Inserts the new ingredient cost data into the 'ingredient_cost' table in the database, handling any integrity or general exceptions.
-
-    Args:
-        cur: Database cursor object for executing SQL commands.
-        conn: Database connection object used to commit changes to the database.
-        engine: SQLAlchemy engine object for connecting to the database.
-        recipes: DataFrame containing recipe information, including ingredient names and quantities.
-
-    Returns:
-        pd.DataFrame: A DataFrame containing the updated ingredient cost data, including columns for item, store ID, store name, date, amount, unit of measure, quantity, base cost, and base unit of measure.
-
-    Raises:
-        IntegrityError: If there is an integrity issue while writing to the database.
-        Exception: For any other errors encountered during the database update process.
-    """
-
-    # get list of unique recipes that begin with "PREP " from recipes table
-    prep_recipes = get_prep_recipes()
-    prep_list = prep_recipes["recipe"].unique().tolist()
+def update_ingredient_cost(cur, conn, engine, recipes) -> None:
 
     cur.execute(
         """
@@ -234,7 +381,7 @@ def update_ingredient_cost(cur, conn, engine, recipes) -> pd.DataFrame:
         """
     )
     query = cur.fetchall()
-    item_cost = pd.DataFrame(
+    item_cost: pd.DataFrame = pd.DataFrame(
         query,
         columns=[
             "date",
@@ -250,13 +397,19 @@ def update_ingredient_cost(cur, conn, engine, recipes) -> pd.DataFrame:
         ],
     )
 
-    prep_recipe_costs = pd.DataFrame()
+    # get list of unique recipes that begin with "PREP " from recipes table
+    prep_recipes: pd.DataFrame = pd.DataFrame(get_prep_recipes())
+    prep_list = prep_recipes["recipe"].unique().tolist()
+
+    prep_recipe_costs: pd.DataFrame = pd.DataFrame()
     for prep in prep_list:
-        prep_items = recipes[recipes["recipe"] == prep]
+        prep_items: pd.DataFrame = recipes[recipes["ingredient"] == prep]
         prep_items = prep_items[["ingredient", "qty"]]
         prep_items = prep_items.merge(item_cost, left_on="ingredient", right_on="item")
         prep_items["amount"] = prep_items["base_cost"] * prep_items["qty"]
-        prep_cost = prep_items.groupby(["id", "store"])["amount"].sum().reset_index()
+        prep_cost: pd.DataFrame = (
+            prep_items.groupby(["id", "store"])["amount"].sum().reset_index()
+        )
         prep_cost["recipe"] = prep
         # reorder columns
         prep_cost = prep_cost[["recipe", "id", "store", "amount"]]
@@ -269,7 +422,7 @@ def update_ingredient_cost(cur, conn, engine, recipes) -> pd.DataFrame:
         prep_recipe_costs["amount"] / prep_recipe_costs["base_qty"]
     )
     prep_recipe_costs["date"] = datetime.now().date()
-    prep_recipe_costs.rename(columns={"recipe": "item"}, inplace=True)
+    prep_recipe_costs = prep_recipe_costs.rename(columns={"recipe": "item"})
     prep_recipe_costs = prep_recipe_costs[
         [
             "date",
@@ -285,8 +438,8 @@ def update_ingredient_cost(cur, conn, engine, recipes) -> pd.DataFrame:
         ]
     ]
 
-    df = pd.concat([prep_recipe_costs, item_cost])
-    df.rename(columns={"id": "store_id"}, inplace=True)
+    df: pd.DataFrame = pd.concat([prep_recipe_costs, item_cost])
+    df = df.rename(columns={"id": "store_id"})
     df = df[
         [
             "item",
@@ -301,91 +454,79 @@ def update_ingredient_cost(cur, conn, engine, recipes) -> pd.DataFrame:
             "base_qty",
         ]
     ]
-    df.sort_values(by=["item", "store", "date"], inplace=True)
+    df = df.sort_values(by=["item", "store", "date"])
 
-    # drop table if exists
-    cur.execute('drop table if exists "ingredient_cost" cascade')
-    conn.commit()
-    # update database with table
+    # truncate table and re-insert to preserve table structure and constraints
     try:
-        df.to_sql("ingredient_cost", engine, index=False)
+        cur.execute('truncate table "ingredient_cost"')
         conn.commit()
-    except IntegrityError:
-        print("Error writing to database: IntegrityError")
-    except Exception as e:
-        print("Error writing to database:", e)
+        df.to_sql("ingredient_cost", engine, index=False, if_exists="append")
+    except Exception:
+        conn.rollback()
+        # table may not exist yet; create it
+        try:
+            df.to_sql("ingredient_cost", engine, index=False, if_exists="replace")
+        except IntegrityError:
+            print("Error writing to database: IntegrityError")
+        except Exception as e:
+            print("Error writing to database:", e)
 
-    return df
+    return
 
 
 def update_recipe_cost(cur, conn, engine) -> None:
-    """
-    Fetches location and restaurant data from a database, merges it with menu analysis data,
-    and updates the database with a new table containing recipe cost information.
-
-    This function performs the following steps:
-    1. Retrieves location data from the 'location' table in the database.
-    2. Retrieves restaurant data from the 'restaurants' table in the database.
-    3. Merges the location data with the restaurant data based on 'locationid'.
-    4. Reads menu analysis data from a CSV file, renames columns for consistency, and merges it with the restaurant data.
-    5. Processes the merged data to extract 'concept' and 'menu_item' information, adds a 'date' column, and fills any missing values with 0.
-    6. Drops any existing 'recipe_cost' table in the database.
-    7. Attempts to update the database with the new 'recipe_cost' table, handling any database integrity errors.
-
-    Returns:
-        None
-
-    Raises:
-        IntegrityError: If there is an integrity issue while writing to the database.
-        Exception: For any other errors encountered during the database update process.
-    """
-
     cur.execute("SELECT locationid, name FROM location")
     location = cur.fetchall()
-    location = pd.DataFrame(location, columns=["locationid", "name"])
+    location: pd.DataFrame = pd.DataFrame(location, columns=["locationid", "name"])
 
     cur.execute("SELECT locationid, name, id FROM restaurants")
     restaurants = cur.fetchall()
-    restaurants = pd.DataFrame(restaurants, columns=["locationid", "name", "id"])
-    restaurants.rename(columns={"name": "location"}, inplace=True)
-    restaurants.dropna(inplace=True)
+    restaurants: pd.DataFrame = pd.DataFrame(
+        restaurants, columns=["locationid", "name", "id"]
+    )
+    restaurants = restaurants.rename(columns={"name": "location"})
+    restaurants = restaurants.dropna()
 
-    df = pd.merge(restaurants, location, on="locationid", how="left")
-    df.drop(columns=["locationid"], inplace=True)
+    df: pd.DataFrame = pd.merge(restaurants, location, on="locationid", how="left")
+    df = df.drop(columns=["locationid"])
 
-    menu_analysis = pd.read_csv(
+    menu_analysis: pd.DataFrame = pd.read_csv(
         "./downloads/Menu Price Analysis.csv",
         skiprows=3,
         sep=",",
         thousands=",",
         usecols=["MenuItemName", "Location", "UnitCost_Loc"],
     )
-    menu_analysis.rename(
+    menu_analysis = menu_analysis.rename(
         columns={
             "MenuItemName": "menu_item",
             "Location": "name",
             "UnitCost_Loc": "recipe_cost",
         },
-        inplace=True,
     )
     menu_analysis["name"] = menu_analysis["name"].str.strip()
     df = pd.merge(menu_analysis, df, on="name", how="left", sort=False)
-    df.drop(columns=["name"], inplace=True)
+    df = df.drop(columns=["name"])
     df[["concept", "menu_item"]] = df["menu_item"].str.split(" - ", n=1, expand=True)
-    df["date"] = datetime.now().date()
+    # set date to yesterday's date
+    df["date"] = datetime.now().date() - timedelta(days=1)
     df = df.fillna(0)
     df = df[["date", "id", "location", "concept", "menu_item", "recipe_cost"]]
-    # drop table if exists
-    cur.execute('drop table if exists "recipe_cost" cascade')
-    conn.commit()
-    # update database with table
+
+    # truncate table and re-insert to preserve table structure and constraints
     try:
-        df.to_sql("recipe_cost", engine, index=False)
+        cur.execute('truncate table "recipe_cost"')
         conn.commit()
-    except IntegrityError:
-        print("Error writing to database: IntegrityError")
-    except Exception as e:
-        print("Error writing to database:", e)
+        df.to_sql("recipe_cost", engine, index=False, if_exists="append")
+    except Exception:
+        conn.rollback()
+        # table may not exist yet; create it
+        try:
+            df.to_sql("recipe_cost", engine, index=False, if_exists="replace")
+        except IntegrityError:
+            print("Error writing to database: IntegrityError")
+        except Exception as e:
+            print("Error writing to database:", e)
 
     return
 
@@ -393,8 +534,7 @@ def update_recipe_cost(cur, conn, engine) -> None:
 if __name__ == "__main__":
     with DatabaseConnection() as db:
         recipe_ingredients = ingredient_update(db.cur, db.conn, db.engine)
-        ingredient_costs = update_ingredient_cost(
-            db.cur, db.conn, db.engine, recipe_ingredients
-        )
+        update_ingredient_cost(db.cur, db.conn, db.engine, recipe_ingredients)
         update_recipe_cost(db.cur, db.conn, db.engine)
-        recreate_all_views(db.conn)
+        ingredient_update_flat(db.cur, db.conn, db.engine)
+        # recreate_all_views(db.conn)

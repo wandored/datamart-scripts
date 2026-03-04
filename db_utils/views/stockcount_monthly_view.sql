@@ -1,4 +1,5 @@
-CREATE OR REPLACE VIEW stockcount_monthly AS
+DROP VIEW IF EXISTS stockcount_monthly;
+CREATE VIEW stockcount_monthly AS
  WITH date_series AS (
      SELECT generate_series(CURRENT_DATE - '29 days'::interval, CURRENT_DATE::timestamp without time zone, '1 day'::interval)::date AS date
     ), all_combinations AS (

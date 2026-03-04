@@ -1,4 +1,5 @@
-CREATE OR REPLACE VIEW public.stockcount_sales_toast
+DROP VIEW IF EXISTS public.stockcount_sales_toast;
+CREATE VIEW public.stockcount_sales_toast
 AS
 WITH ingredient_mapping AS (
     SELECT 

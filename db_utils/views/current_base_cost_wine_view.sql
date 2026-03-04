@@ -1,4 +1,5 @@
-CREATE OR REPLACE VIEW public.current_base_cost_wine
+DROP VIEW IF EXISTS public.current_base_cost_wine;
+CREATE VIEW public.current_base_cost_wine
  AS
  WITH ranked AS (
          SELECT r.id AS store_id,

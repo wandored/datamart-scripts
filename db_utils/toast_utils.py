@@ -22,42 +22,91 @@ def get_access_token(api_access_url):
     """
     Fetches the OAuth2 access token required to authenticate API requests.
     """
-    # Step 1: Try reading from token cache
-    if os.path.exists(Config.TOKEN_CACHE_FILE):
-        with open(Config.TOKEN_CACHE_FILE) as f:
-            cache = json.load(f)
-            token = cache.get("token")
-            if isinstance(token, dict):
-                token = token.get("token")
-                print(token)
-            if token and isinstance(token, str):
-                payload = decode_jwt(token)
-                exp = payload.get("exp", 0)
-                print(exp)
-                if time.time() < exp - 60:  # valid for more than 1 minute
-                    return token
+    try:
+        if os.path.exists(Config.TOKEN_CACHE_FILE):
+            with open(Config.TOKEN_CACHE_FILE) as f:
+                cache = json.load(f)
+                token = cache.get("token")
+                if isinstance(token, dict):
+                    token = token.get("token")
+                if token and isinstance(token, str):
+                    payload = decode_jwt(token)
+                    exp = payload.get("exp", 0)
+                    if time.time() < exp - 60:  # valid for more than 1 minute
+                        return token
+    except Exception as e:
+        logging.warning(f"Error reading token cache: {e}")
 
     url = api_access_url + "/authentication/v1/authentication/login"
     headers = {
         "Content-Type": "application/json"  # This ensures the correct content type
     }
-    with open(".env/auth.json") as f:
-        data = json.load(f)
+    data = {
+        "userAccessType": Config.USER_ACCESS_TYPE,
+        "clientId": Config.CLIENT_ID,
+        "clientSecret": Config.CLIENT_SECRET,
+    }
 
-    response = requests.post(
-        url,
-        headers=headers,
-        json=data,
-    )
-
-    if response.status_code == 200:
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=15)
+        response.raise_for_status()
         token = response.json().get("token")
-        with open(Config.TOKEN_CACHE_FILE, "w") as f:
-            json.dump({"token": token}, f)
-        return token
-    else:
-        logging(f"Error fetching access token: {response.status_code}, {response.text}")
+
+        if token:
+            with open(Config.TOKEN_CACHE_FILE, "w") as f:
+                json.dump({"token": token}, f)
+            logging.info("Fetched new access token")
+            return token
+        else:
+            logging.info(
+                f"Error fetching access token: {response.status_code}, {response.text}"
+            )
+            return None
+    except requests.RequestException as e:
+        logging.error(f"Request error while fetching access token: {e}")
         return None
+
+
+# def get_access_token(api_access_url):
+#     """
+#     Fetches the OAuth2 access token required to authenticate API requests.
+#     """
+#     # Step 1: Try reading from token cache
+#     if os.path.exists(Config.TOKEN_CACHE_FILE):
+#         with open(Config.TOKEN_CACHE_FILE) as f:
+#             cache = json.load(f)
+#             token = cache.get("token")
+#             if isinstance(token, dict):
+#                 token = token.get("token")
+#                 print(token)
+#             if token and isinstance(token, str):
+#                 payload = decode_jwt(token)
+#                 exp = payload.get("exp", 0)
+#                 print(exp)
+#                 if time.time() < exp - 60:  # valid for more than 1 minute
+#                     return token
+#
+#     url = api_access_url + "/authentication/v1/authentication/login"
+#     headers = {
+#         "Content-Type": "application/json"  # This ensures the correct content type
+#     }
+#     with open(".env/auth.json") as f:
+#         data = json.load(f)
+#
+#     response = requests.post(
+#         url,
+#         headers=headers,
+#         json=data,
+#     )
+#
+#     if response.status_code == 200:
+#         token = response.json().get("token")
+#         with open(Config.TOKEN_CACHE_FILE, "w") as f:
+#             json.dump({"token": token}, f)
+#         return token
+#     else:
+#         logging(f"Error fetching access token: {response.status_code}, {response.text}")
+#         return None
 
 
 def get_response_data(url, headers, params=None, rate_limit_wait=1.0):

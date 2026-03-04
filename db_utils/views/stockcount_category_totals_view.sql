@@ -1,4 +1,5 @@
-CREATE OR REPLACE VIEW stockcount_category_totals
+DROP VIEW IF EXISTS stockcount_category_totals;
+CREATE VIEW stockcount_category_totals
 AS
 SELECT sc.date,
     sc.week,

@@ -1,28 +1,16 @@
 # read UnitOfMeasure.csv file and upload to database
-
 import pandas as pd
-
-# import icecream as ic
-from psycopg2.errors import IntegrityError
-
 from db_utils.dbconnect import DatabaseConnection
-from db_utils.recreate_views import recreate_all_views
 
 
-# finds and returns the renamed items
-def findRenamed(old, new):
-    # merge both files on the uofm_id column
+def find_renamed(old, new):
     merged = pd.merge(old, new, on="uofm_id")
-
-    # rename for readability
     merged.rename(columns={"name_x": "old_name", "name_y": "new_name"}, inplace=True)
-
-    # check for differences in the name column
     diff = merged[merged["old_name"] != merged["new_name"]]
     return diff
 
 
-def main(cur, conn, engine):
+def main():
     file_path = "./downloads/UnitOfMeasure.csv"
     uofm = pd.read_csv(
         file_path,
@@ -36,7 +24,7 @@ def main(cur, conn, engine):
             "Base Qty",
         ],
     )
-    uofm.rename(
+    uofm = uofm.rename(
         columns={
             "ID": "uofm_id",
             "Name": "name",
@@ -45,43 +33,60 @@ def main(cur, conn, engine):
             "Measure Type": "measure_type",
             "Base UofM": "base_uofm",
             "Base Qty": "base_qty",
-        },
-        inplace=True,
+        }
     )
 
-    # get the current unitsofmeasure table
-    cur.execute("SELECT uofm_id, name FROM unitsofmeasure")
-    # store it as a pandas dataframe
-    uofm_db = pd.DataFrame(cur.fetchall(), columns=["uofm_id", "name"])
-    # find the renamed items
-    renamed_items = findRenamed(uofm_db, uofm)
+    with DatabaseConnection() as db:
+        # find renamed items and update transaction_detail
+        db.execute("SELECT uofm_id, name FROM unitsofmeasure")
+        uofm_db = pd.DataFrame(db.fetchall(), columns=["uofm_id", "name"])
+        renamed_items = find_renamed(uofm_db, uofm)
 
-    # ic(renamed_items)
+        if not renamed_items.empty:
+            rename_records = list(
+                zip(renamed_items["new_name"], renamed_items["old_name"])
+            )
+            db.executemany(
+                """
+                UPDATE transaction_detail
+                SET unitofmeasurename = v.new_name
+                FROM (VALUES %s) AS v(new_name, old_name)
+                WHERE unitofmeasurename = v.old_name
+                """,
+                rename_records,
+            )
 
-    # psql query to check for the old name in the table transacction_detail and replaces it with the new name
-    for index, row in renamed_items.iterrows():
-        cur.execute(
-            f"UPDATE transaction_detail SET unitofmeasurename = '{row['new_name']}' WHERE unitofmeasurename = '{row['old_name']}'"
+        # upsert unitsofmeasure
+        uofm = uofm.astype(str).replace("nan", None)
+        uofm = uofm.drop_duplicates(subset=["uofm_id"], keep="last")
+        records = uofm[
+            [
+                "uofm_id",
+                "name",
+                "equivalent_qty",
+                "equivalent_uofm",
+                "measure_type",
+                "base_uofm",
+                "base_qty",
+            ]
+        ].values.tolist()
+
+        db.executemany(
+            """
+            INSERT INTO unitsofmeasure (uofm_id, name, equivalent_qty, equivalent_uofm, measure_type, base_uofm, base_qty)
+            VALUES %s
+            ON CONFLICT (uofm_id) DO UPDATE
+            SET name = EXCLUDED.name,
+                equivalent_qty = EXCLUDED.equivalent_qty,
+                equivalent_uofm = EXCLUDED.equivalent_uofm,
+                measure_type = EXCLUDED.measure_type,
+                base_uofm = EXCLUDED.base_uofm,
+                base_qty = EXCLUDED.base_qty
+            """,
+            records,
         )
-        conn.commit()
-
-    # drop table if exists
-    cur.execute('drop table if exists "unitsofmeasure" CASCADE')
-    conn.commit()
-    # update database with table
-    try:
-        uofm.to_sql("unitsofmeasure", engine, index=False)
-        conn.commit()
         print("database uploaded")
-    except IntegrityError:
-        print("Error writing to database: IntegrityError")
-        return 1
-    except Exception as e:
-        print("Error writing to database:", e)
-        return 1
 
 
 if __name__ == "__main__":
-    with DatabaseConnection() as db:
-        main(db.cur, db.conn, db.engine)
-        recreate_all_views(db.conn)
+    main()

@@ -30,13 +30,15 @@ def make_HTTP_request(url):
     return df
 
 
-def update_glaccount(cur, conn, engine):
+def update_glaccount(db):
     query = "$select=glAccountId,name,glAccountNumber,glType&{}"
     url = "{}/GlAccount?{}".format(Config.SRVC_ROOT, query)
     df = make_HTTP_request(url)
 
     if df.empty:
-        return
+        logging.warning("No data returned for GlAccount")
+        return 1
+
     df = df.rename(
         columns={
             "glAccountId": "glaccountid",
@@ -44,49 +46,37 @@ def update_glaccount(cur, conn, engine):
             "glType": "gltype",
         }
     )
-    # table_name = "glaccount"
-    # temp_table_name = "temp_table"
+    df = df.astype(str).replace("nan", None)
+    df = df.drop_duplicates(subset=["glaccountid"], keep="last")
+    records = df[["glaccountid", "name", "glaccountnumber", "gltype"]].values.tolist()
+
     try:
-        df.to_sql("temp_table", engine, if_exists="replace", index=False)
-        upsert_query = sql.SQL(
+        db.executemany(
             """
-       INSERT INTO {table} (glaccountid, name, glaccountnumber, gltype)
-       SELECT t.glaccountid, t.name, t.glaccountnumber, t.gltype
-        FROM {temp_table} AS t
-        ON CONFLICT (glaccountid) DO UPDATE
-        SET name = EXCLUDED.name,
-            glaccountnumber = EXCLUDED.glaccountnumber,
-            glType = EXCLUDED.glType
-       """
-        ).format(
-            table=sql.Identifier("glaccount"), temp_table=sql.Identifier("temp_table")
+            INSERT INTO glaccount (glaccountid, name, glaccountnumber, gltype)
+            VALUES %s
+            ON CONFLICT (glaccountid) DO UPDATE
+            SET name = EXCLUDED.name,
+                glaccountnumber = EXCLUDED.glaccountnumber,
+                gltype = EXCLUDED.gltype
+            """,
+            records,
         )
-        cur.execute(upsert_query)
-    except UniqueViolation as e:
-        logging.error("Error upserting data: %s", e)
-        return 1
+        logging.info("GlAccount table updated successfully")
+        return 0
     except Exception as e:
         logging.error("Error writing to database: %s", e)
         return 1
-    finally:
-        try:
-            # drop temporary table
-            cur.execute("DROP TABLE IF EXISTS {} CASCADE".format("temp_table"))
-            conn.commit()
-        except Exception as e:
-            logging.error("Error dropping temporary table: %s", e)
-            conn.rollback()  # rollback the transaction if an error occurs
-            return 1
-    return 0
 
 
-def update_jobtitle(cur, conn, engine):
+def update_jobtitle(db):
     query = "$select=jobTitleId,name,jobCode,glAccount_Id,location_Id&{}"
     url = "{}/JobTitle?{}".format(Config.SRVC_ROOT, query)
     df = make_HTTP_request(url)
 
     if df.empty:
-        return
+        logging.warning("No data returned for JobTitle")
+        return 1
     df = df.rename(
         columns={
             "jobTitleId": "jobtitleid",
@@ -95,195 +85,150 @@ def update_jobtitle(cur, conn, engine):
             "location_Id": "location_id",
         }
     )
-    # table_name = "job_title"
-    # temp_table_name = "temp_table"
+    df = df.astype(str).replace("nan", None)
+    df = df.drop_duplicates(subset=["jobtitleid"], keep="last")
+    # validate foreign keys against existing glaccounts and locations, set to None if not valid
+    db.execute("SELECT glaccountid FROM glaccount")
+    valid_glaccounts = {row[0] for row in db.fetchall()}
+    db.execute("SELECT locationid FROM location")
+    valid_locations = {row[0] for row in db.fetchall()}
+    df.loc[~df["glaccount_id"].isin(valid_glaccounts), "glaccount_id"] = None
+    df.loc[~df["location_id"].isin(valid_locations), "location_id"] = None
+
+    records = df[
+        ["jobtitleid", "name", "jobcode", "glaccount_id", "location_id"]
+    ].values.tolist()
     try:
-        df.to_sql("temp_table", engine, if_exists="replace", index=False)
-        upsert_query = sql.SQL(
+        db.executemany(
             """
-            INSERT INTO {table} (jobtitleid, name, jobcode, glaccount_id, location_id)
-            SELECT t.jobtitleid, t.name, t.jobcode, t.glaccount_id, t.location_id
-            FROM {temp_table} AS t
+            INSERT INTO job_title (jobtitleid, name, jobcode, glaccount_id, location_id)
+            VALUES %s
             ON CONFLICT (jobtitleid) DO UPDATE
             SET name = EXCLUDED.name,
                 jobcode = EXCLUDED.jobcode,
                 glaccount_id = EXCLUDED.glaccount_id,
                 location_id = EXCLUDED.location_id
-            """
-        ).format(
-            table=sql.Identifier("job_title"), temp_table=sql.Identifier("temp_table")
+            """,
+            records,
         )
-        cur.execute(upsert_query)
-        conn.commit()
-    except UniqueViolation as e:
-        logging.error("Error upserting data: %s", e)
-        return 1
+        logging.info("JobTitle table updated successfully")
+        return 0
     except Exception as e:
         logging.error("Error writing to database: %s", e)
         return 1
-    finally:
-        try:
-            # drop temporary table
-            cur.execute("DROP TABLE IF EXISTS {} CASCADE".format("temp_table"))
-            conn.commit()
-        except Exception as e:
-            logging.error("Error dropping temporary table: %s", e)
-            conn.rollback()  # rollback the transaction if an error occurs
-            return 1
-    return 0
 
 
-def update_location(cur, conn, engine):
+def update_location(db):
     query = "$select=locationId,name,locationNumber&{}"
     url = "{}/Location?{}".format(Config.SRVC_ROOT, query)
     df = make_HTTP_request(url)
 
     if df.empty:
-        return
+        logging.warning("No data returned for Location")
+        return 1
     df = df.rename(
         columns={
             "locationId": "locationid",
             "locationNumber": "locationnumber",
         }
     )
-    # table_name = "location"
-    # temp_table_name = "temp_table"
+    df = df.astype(str).replace("nan", None)
+    df = df.drop_duplicates(subset=["locationid"], keep="last")
+    records = df[["locationid", "name", "locationnumber"]].values.tolist()
     try:
-        df.to_sql("temp_table", engine, if_exists="replace", index=False)
-        upsert_query = sql.SQL(
+        db.executemany(
             """
-       INSERT INTO {table} (locationid, name, locationnumber)
-       SELECT t.locationid, t.name, t.locationnumber
-        FROM {temp_table} AS t
-        ON CONFLICT (locationid) DO UPDATE
-        SET name = EXCLUDED.name,
-            locationid = EXCLUDED.locationid,
-            locationnumber = EXCLUDED.locationnumber
-       """
-        ).format(
-            table=sql.Identifier("location"), temp_table=sql.Identifier("temp_table")
+            INSERT INTO location (locationid, name, locationnumber)
+            VALUES %s
+            ON CONFLICT (locationid) DO UPDATE
+            SET name = EXCLUDED.name,
+                locationnumber = EXCLUDED.locationnumber
+            """,
+            records,
         )
-        cur.execute(upsert_query)
-        conn.commit()
-    except UniqueViolation as e:
-        logging.error("Error upserting data: %s", e)
-        return 1
+        logging.info("Location table updated successfully")
+        return 0
     except Exception as e:
         logging.error("Error writing to database: %s", e)
         return 1
-    finally:
-        try:
-            # drop temporary table
-            cur.execute("DROP TABLE IF EXISTS {} CASCADE".format("temp_table"))
-            conn.commit()
-        except Exception as e:
-            logging.error("Error dropping temporary table: %s", e)
-            conn.rollback()  # rollback the transaction if an error occurs
-            return 1
-    return 0
 
 
-def update_company(cur, conn, engine):
+def update_company(db):
     query = "$select=companyId,name&{}"
     url = "{}/Company?{}".format(Config.SRVC_ROOT, query)
     df = make_HTTP_request(url)
 
     if df.empty:
-        return
+        logging.warning("No data returned for Company")
+        return 1
     df = df.rename(
         columns={
             "companyId": "companyid",
         }
     )
-    # table_name = "company"
-    # temp_table_name = "temp_table"
+    df = df.astype(str).replace("nan", None)
+    df = df.drop_duplicates(subset=["companyid"], keep="last")
+    records = df[["companyid", "name"]].values.tolist()
     try:
-        df.to_sql("temp_table", engine, if_exists="replace", index=False)
-        upsert_query = sql.SQL(
+        db.executemany(
             """
-       INSERT INTO {table} (companyid, name)
-       SELECT t.companyid, t.name
-        FROM {temp_table} AS t
-        ON CONFLICT (companyid) DO UPDATE
-        SET name = EXCLUDED.name
-       """
-        ).format(
-            table=sql.Identifier("company"), temp_table=sql.Identifier("temp_table")
+            INSERT INTO company (companyid, name)
+            VALUES %s
+            ON CONFLICT (companyid) DO UPDATE
+            SET name = EXCLUDED.name
+            """,
+            records,
         )
-        cur.execute(upsert_query)
-        conn.commit()
-    except UniqueViolation as e:
-        logging.error("Error writing to database: %s", e)
-        return 1
+        logging.info("Company table updated successfully")
+        return 0
     except Exception as e:
         logging.error("Error writing to database: %s", e)
         return 1
-    finally:
-        try:
-            # drop temporary table
-            cur.execute("DROP TABLE IF EXISTS {} CASCADE".format("temp_table"))
-            conn.commit()
-        except Exception as e:
-            logging.error("Error dropping temporary table: %s", e)
-            conn.rollback()  # rollback the transaction if an error occurs
-            return 1
-    return 0
 
 
-def update_item(cur, conn, engine):
+def update_item(db):
     query = "$select=itemId,name,category1,category2,category3&{}"
     url = "{}/Item?{}".format(Config.SRVC_ROOT, query)
     df = make_HTTP_request(url)
 
     if df.empty:
-        return
+        logging.warning("No data returned for Item")
+        return 1
     df = df.rename(
         columns={
             "itemId": "itemid",
         }
     )
-    # table_name = "item"
-    # temp_table_name = "temp_table"
+    df = df.astype(str).replace("nan", None)
+    df = df.drop_duplicates(subset=["itemid"], keep="last")
+    records = df[
+        ["itemid", "name", "category1", "category2", "category3"]
+    ].values.tolist()
     try:
-        df.to_sql("temp_table", engine, if_exists="replace", index=False)
-        upsert_query = sql.SQL(
+        db.executemany(
             """
-       INSERT INTO {table} (itemid, name, category1, category2, category3)
-       SELECT t.itemid, t.name, t.category1, t.category2, t.category3
-        FROM {temp_table} AS t
-        ON CONFLICT (itemid) DO UPDATE
-        SET name = EXCLUDED.name,
-            itemid = EXCLUDED.itemid,
-            category1 = EXCLUDED.category1,
-            category2 = EXCLUDED.category2,
-            category3 = EXCLUDED.category3
-       """
-        ).format(table=sql.Identifier("item"), temp_table=sql.Identifier("temp_table"))
-        cur.execute(upsert_query)
-        conn.commit()
-    except UniqueViolation as e:
-        logging.error("Error writing to database: %s", e)
-        return 1
+            INSERT INTO item (itemid, name, category1, category2, category3)
+            VALUES %s
+            ON CONFLICT (itemid) DO UPDATE
+            SET name = EXCLUDED.name,
+                category1 = EXCLUDED.category1,
+                category2 = EXCLUDED.category2,
+                category3 = EXCLUDED.category3
+            """,
+            records,
+        )
+        logging.info("Item table updated successfully")
+        return 0
     except Exception as e:
         logging.error("Error writing to database: %s", e)
         return 1
-    finally:
-        try:
-            # drop temporary table
-            cur.execute("DROP TABLE IF EXISTS {} CASCADE".format("temp_table"))
-            conn.commit()
-        except Exception as e:
-            logging.error("Error dropping temporary table: %s", e)
-            conn.rollback()  # rollback the transaction if an error occurs
-            return 1
-    return 0
 
 
 if __name__ == "__main__":
     with DatabaseConnection() as db:
-        update_glaccount(db.cur, db.conn, db.engine)
-        update_jobtitle(db.cur, db.conn, db.engine)
-        update_location(db.cur, db.conn, db.engine)
-        update_company(db.cur, db.conn, db.engine)
-        update_item(db.cur, db.conn, db.engine)
-        recreate_all_views(db.conn)
+        update_glaccount(db)
+        update_jobtitle(db)
+        update_location(db)
+        update_company(db)
+        update_item(db)
+        # recreate_all_views(db)

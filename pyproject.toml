@@ -11,4 +11,5 @@ dependencies = [
   "icecream",
   "xlsxwriter>=3.2.5",
   "tqdm>=4.67.1",
+  "pandas-stubs>=3.0.0.260204",
 ]

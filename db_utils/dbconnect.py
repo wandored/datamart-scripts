@@ -1,5 +1,5 @@
 import psycopg2
-from psycopg2.extras import DictCursor
+from psycopg2.extras import DictCursor, execute_values
 from sqlalchemy import create_engine
 
 from db_utils.config import Config
@@ -34,4 +34,31 @@ class DatabaseConnection:
             self.conn.close()
         if self.engine:
             self.engine.dispose()
-        print("Database connection closed")
+
+    def execute(self, query: str, params: tuple = None):
+        """Execute a single query with optional parameters."""
+        self.cur.execute(query, params)
+        self.conn.commit()
+
+    def executemany(self, query: str, records: list):
+        """Execute a query against all records using psycopg2 execute_values for performance."""
+        execute_values(self.cur, query, records)
+        self.conn.commit()
+
+    def rollback(self):
+        """Rollback the current transaction."""
+        if self.conn:
+            self.conn.rollback()
+
+    def fetchall(self) -> list:
+        """Fetch all results from the last executed query."""
+        return self.cur.fetchall()
+
+    def fetchone(self) -> dict:
+        """Fetch a single result from the last executed query."""
+        return self.cur.fetchone()
+
+    def commit(self):
+        """Commit the current transaction."""
+        if self.conn:
+            self.conn.commit()

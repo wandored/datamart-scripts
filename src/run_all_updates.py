@@ -4,10 +4,15 @@ from datetime import datetime
 
 # List of modules to run (in order)
 MODULES = [
+    "src.odata-table-update",
+    "src.sales-account-update",
+    "src.uofm-update",
+    "src.recipe-table-update",
+    "src.menu-item-table-update",
+    "src.recipe-ingredients-flat",
+    "src.weekly-item-base-cost",
     "src.recipe-ingredient-update",
     "src.item-conversion-update",
-    "src.uofm-update",
-    "src.odata-table-update",
     "src.menu-engineering-online",
 ]
 

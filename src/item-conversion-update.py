@@ -77,9 +77,9 @@ def get_conversion_units():
     return df
 
 
-def add_name_column(df, engine):
+def add_name_column(df, db):
     # read data from item table
-    item = pd.read_sql("SELECT itemid, name FROM item", engine)
+    item = pd.read_sql("SELECT itemid, name FROM item", db.engine)
     df = df.merge(item, on="itemid", how="left")
     df["name"] = df["name_x"].fillna(df["name_y"])
     df = df.drop(columns=["name_x", "name_y"])
@@ -88,17 +88,18 @@ def add_name_column(df, engine):
     return df
 
 
-def write_to_database(df, cur, conn, engine):
+def write_to_database(df, db):
     table_name = "item_conversion"
     temp_table_name = "temp_table"
     try:
-        df.to_sql(temp_table_name, engine, if_exists="replace", index=False)
-        update_query = sql.SQL(
-            """
-                insert into {table} (itemid, name, weight_qty, weight_uofm, volume_qty, volume_uofm, each_qty, each_uofm, measure_type)
-                select t.itemid, t.name, t.weight_qty, t.weight_uofm, t.volume_qty, t.volume_uofm, t.each_qty, t.each_uofm, t.measure_type
-                from {temp_table} AS t
-                ON CONFLICT (itemid) DO UPDATE SET
+        # Write DataFrame to a temporary table
+        df.to_sql(temp_table_name, db.engine, if_exists="replace", index=False)
+        # Upsert from temp table into main table
+        upsert_query = """
+            INSERT INTO item_conversion (itemid, name, weight_qty, weight_uofm, volume_qty, volume_uofm, each_qty, each_uofm, measure_type)
+            SELECT itemid, name, weight_qty, weight_uofm, volume_qty, volume_uofm, each_qty, each_uofm, measure_type
+            FROM temp_table
+            ON CONFLICT (itemid) DO UPDATE SET
                 name = EXCLUDED.name,
                 weight_qty = EXCLUDED.weight_qty,
                 weight_uofm = EXCLUDED.weight_uofm,
@@ -107,26 +108,33 @@ def write_to_database(df, cur, conn, engine):
                 each_qty = EXCLUDED.each_qty,
                 each_uofm = EXCLUDED.each_uofm,
                 measure_type = EXCLUDED.measure_type
-                        """
-        ).format(
-            table=sql.Identifier(table_name),
-            temp_table=sql.Identifier(temp_table_name),
-        )
-        cur.execute(update_query)
+        """
+        db.cur.execute(upsert_query)
+        # Delete records not present in the new data
+        delete_query = """
+            DELETE FROM item_conversion
+            WHERE itemid NOT IN (SELECT itemid FROM temp_table)
+        """
+        db.cur.execute(delete_query)
+        db.conn.commit()
     except IntegrityError as e:
         print(e)
+        db.conn.rollback()
+    except Exception as e:
+        print("Error writing to database:", e)
+        db.conn.rollback()
     finally:
         try:
-            cur.execute("DROP TABLE IF EXISTS temp_table")
-            conn.commit()
+            db.cur.execute("DROP TABLE IF EXISTS temp_table")
+            db.conn.commit()
         except Exception as e:
             print("Error dropping temp table:", e)
-            conn.rollback()
+            db.conn.rollback()
 
 
 if __name__ == "__main__":
     with DatabaseConnection() as db:
         df = get_conversion_units()
-        df = add_name_column(df, db.engine)
-        write_to_database(df, db.cur, db.conn, db.engine)
-        recreate_all_views(db.conn)
+        df = add_name_column(df, db)
+        write_to_database(df, db)
+        # recreate_all_views(db.conn)

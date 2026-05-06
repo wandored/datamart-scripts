@@ -36,24 +36,24 @@ def calculate_current_cost_per_item(cur, location, end_of_week_date):
         WITH latest_purchases AS (
             SELECT
                 p.date,
-                p.store,
-                p.itemid,
-                p.item,
+                p.store_id,
+                p.item_id,
+                i.name,
                 p.quantity,
                 p.uofm,
                 p.amount,
-                uom.base_uofm,
-                uom.base_qty,
-                ROW_NUMBER() OVER (PARTITION BY p.item ORDER BY p.date DESC) AS rn
-            FROM purchases p
-            JOIN unitsofmeasure uom ON p.uofm = uom.name
-            WHERE p.id = %s AND p.date <= %s AND category1 in ('Food', 'LBW')
+                p.base_uofm,
+                p.base_qty,
+                ROW_NUMBER() OVER (PARTITION BY p.item_id ORDER BY p.date DESC) AS rn
+            FROM purchases_pbi p
+            JOIN item i ON p.item_id = i.itemid
+            WHERE p.store_id = %s AND p.date <= %s AND p.category1 in ('Food', 'LBW')
         )
         SELECT
             date,
-            store,
-            itemid,
-            item,
+            store_id,
+            item_id,
+            name AS item,
             quantity,
             uofm,
             amount,
@@ -77,7 +77,6 @@ def calculate_current_cost_per_item(cur, location, end_of_week_date):
         axis=1,
     )
     df = df.drop(columns=["quantity", "uofm", "amount", "base_qty"])
-    df = df.rename(columns={"itemid": "item_id"})
 
     return df
 
@@ -108,6 +107,9 @@ def process_week(db, year, period, week):
         weekly_item_base_cost_df = pd.concat(
             [weekly_item_base_cost_df, location_df], ignore_index=True
         )
+
+    # drop rows with missing base_uofm
+    weekly_item_base_cost_df = weekly_item_base_cost_df.dropna(subset=["base_uofm"])
 
     # reorder columns
     weekly_item_base_cost_df = weekly_item_base_cost_df[
@@ -161,57 +163,6 @@ def process_week(db, year, period, week):
     execute_values(db.cur, upsert_query, tuples)
     db.conn.commit()
     print("Data upserted into weekly_item_base_cost table successfully.")
-
-
-# def update_weekly_recipe_cost(db, year, period, week):
-#
-#     sql = """
-#     INSERT INTO weekly_recipe_cost (
-#         store_id,
-#         year,
-#         period,
-#         week,
-#         week_index,
-#         period_index,
-#         recipe_cost,
-#         menu_item_id,
-#         recipe_id,
-#     )
-#     SELECT
-#         w.store_id,
-#         r.recipe_id,
-#         r.menu_item_id,
-#         w.year,
-#         w.period,
-#         w.week,
-#         w.week_index,
-#         w.period_index,
-#         SUM(r.qty * w.base_cost) AS recipe_cost
-#     FROM weekly_item_base_cost w
-#     JOIN restaurants s
-#         ON s.id = w.store_id
-#     JOIN recipe_ingredients_flat r
-#         ON r.item_id = w.item_id
-#         AND r.concept = s.concept
-#     WHERE
-#         w.year = %s
-#         AND w.period = %s
-#         AND w.week = %s
-#     GROUP BY
-#         w.store_id,
-#         r.recipe_id,
-#         r.menu_item_id,
-#         w.year,
-#         w.period,
-#         w.week,
-#         w.week_index,
-#         w.period_index
-#     ON CONFLICT (store_id, concept, menu_item, week_index)
-#     DO UPDATE SET recipe_cost = EXCLUDED.recipe_cost;
-#     """
-#
-#     db.cur.execute(sql, (year, period, week))
-#     db.conn.commit()
 
 
 def main():
@@ -274,7 +225,6 @@ def main():
                         f"No calendar entry found for yesterday's date: {yesterday.date()}"
                     )
             process_week(db, args.year, args.period, args.week)
-        # update_weekly_recipe_cost(db, args.year, args.period, args.week)
 
 
 if __name__ == "__main__":

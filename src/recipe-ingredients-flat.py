@@ -57,53 +57,53 @@ def get_uofm(db) -> pd.DataFrame:
     return df
 
 
-def get_item_conversion(db) -> pd.DataFrame:
-    db.execute(
-        """
-        SELECT name, weight_qty, weight_uofm, volume_qty, volume_uofm, each_qty, each_uofm, measure_type
-        FROM item_conversion
-        """
-    )
-    item_conversion = db.fetchall()
-    df = pd.DataFrame(
-        item_conversion,
-        columns=[
-            "name",
-            "weight_qty",
-            "weight_uofm",
-            "volume_qty",
-            "volume_uofm",
-            "each_qty",
-            "each_uofm",
-            "measure_type",
-        ],
-    )
-    df = df.rename(columns={"name": "ingredient"})
-    return df
+# def get_item_conversion(db) -> pd.DataFrame:
+#     db.execute(
+#         """
+#         SELECT name, weight_qty, weight_uofm, volume_qty, volume_uofm, each_qty, each_uofm, measure_type
+#         FROM item_conversion
+#         """
+#     )
+#     item_conversion = db.fetchall()
+#     df = pd.DataFrame(
+#         item_conversion,
+#         columns=[
+#             "name",
+#             "weight_qty",
+#             "weight_uofm",
+#             "volume_qty",
+#             "volume_uofm",
+#             "each_qty",
+#             "each_uofm",
+#             "measure_type",
+#         ],
+#     )
+#     df = df.rename(columns={"name": "ingredient"})
+#     return df
 
 
-def calculate_menu_cost(row):
-    if row["uofm"] == row["base_uofm"]:
-        return row["qty"] * row["base_cost"]
-    else:
-        if row["uofm"] == "OZ-fl" and row["base_uofm"] == "OZ-wt":
-            conversion_factor = row["volume_qty"] / row["weight_qty"]
-        elif row["uofm"] == "OZ-wt" and row["base_uofm"] == "OZ-fl":
-            conversion_factor = row["weight_qty"] / row["volume_qty"]
-        elif row["uofm"] == "Each" and row["base_uofm"] == "OZ-wt":
-            conversion_factor = row["each_qty"] / row["weight_qty"]
-        elif row["uofm"] == "Each" and row["base_uofm"] == "OZ-fl":
-            conversion_factor = row["each_qty"] / row["volume_qty"]
-        elif row["uofm"] == "OZ-wt" and row["base_uofm"] == "Each":
-            conversion_factor = row["weight_qty"] / row["each_qty"]
-        elif row["uofm"] == "OZ-fl" and row["base_uofm"] == "Each":
-            conversion_factor = row["volume_qty"] / row["each_qty"]
-        else:
-            print(row["ingredient"], "Conversion not found")
-            conversion_factor = (
-                1  # Handle cases where no conversion is needed or available
-            )
-        return row["qty"] * conversion_factor * row["base_cost"]
+# def calculate_menu_cost(row):
+#     if row["uofm"] == row["base_uofm"]:
+#         return row["qty"] * row["base_cost"]
+#     else:
+#         if row["uofm"] == "OZ-fl" and row["base_uofm"] == "OZ-wt":
+#             conversion_factor = row["volume_qty"] / row["weight_qty"]
+#         elif row["uofm"] == "OZ-wt" and row["base_uofm"] == "OZ-fl":
+#             conversion_factor = row["weight_qty"] / row["volume_qty"]
+#         elif row["uofm"] == "Each" and row["base_uofm"] == "OZ-wt":
+#             conversion_factor = row["each_qty"] / row["weight_qty"]
+#         elif row["uofm"] == "Each" and row["base_uofm"] == "OZ-fl":
+#             conversion_factor = row["each_qty"] / row["volume_qty"]
+#         elif row["uofm"] == "OZ-wt" and row["base_uofm"] == "Each":
+#             conversion_factor = row["weight_qty"] / row["each_qty"]
+#         elif row["uofm"] == "OZ-fl" and row["base_uofm"] == "Each":
+#             conversion_factor = row["volume_qty"] / row["each_qty"]
+#         else:
+#             print(row["ingredient"], "Conversion not found")
+#             conversion_factor = (
+#                 1  # Handle cases where no conversion is needed or available
+#             )
+#         return row["qty"] * conversion_factor * row["base_cost"]
 
 
 def ingredient_update_flat() -> pd.DataFrame:
@@ -114,6 +114,9 @@ def ingredient_update_flat() -> pd.DataFrame:
         prep_recipe_items = get_prep_recipes()
 
         # Normalize names same way as recipe column
+        recipe_ingredient["recipe"] = recipe_ingredient["recipe"].str.strip()
+        recipe_ingredient["ingredient"] = recipe_ingredient["ingredient"].str.strip()
+        menu_recipe["recipe"] = menu_recipe["recipe"].str.strip()
         prep_recipe_items["recipe"] = prep_recipe_items["recipe"].str.strip()
         prep_recipe_names = set(
             prep_recipe_items["recipe"].unique()
@@ -166,7 +169,7 @@ def ingredient_update_flat() -> pd.DataFrame:
         # 4️⃣ Recursive PREP explosion
         # ---------------------------------------------------------
 
-        def explode_recipe(recipe_name, multiplier=1.0, visited=None):
+        def explode_recipe(recipe_name, required_qty=1.0, visited=None):
             if visited is None:
                 visited = set()
 
@@ -175,25 +178,28 @@ def ingredient_update_flat() -> pd.DataFrame:
 
             visited.add(recipe_name)
 
+            # Get yield (default = 1 if missing)
+            recipe_yield = recipe_yield_map.get(recipe_name, 1.0)
+            if pd.isna(recipe_yield) or recipe_yield == 0:
+                raise ValueError(f"Invalid yield for recipe: {recipe_name}")
+
             components = recipe_map.get(recipe_name, [])
             results = []
 
-            # Get yield (default = 1 if missing)
-            recipe_yield = recipe_yield_map.get(recipe_name, 1.0)
-
             for comp in components:
                 ingredient = comp["ingredient"]
-                qty = comp["qty"]
-                uofm = comp["uofm"]
-
-                # 🔹 Adjust for yield
-                effective_multiplier = multiplier * (qty / recipe_yield)
+                component_qty = required_qty * comp["qty"] / recipe_yield
 
                 if ingredient in prep_recipe_names:
+                    if ingredient not in recipe_map:
+                        raise ValueError(
+                            f"PREP recipe not found in recipe_map: {ingredient}"
+                        )
+
                     results.extend(
                         explode_recipe(
                             ingredient,
-                            multiplier=effective_multiplier,
+                            required_qty=component_qty,
                             visited=visited.copy(),
                         )
                     )
@@ -201,8 +207,8 @@ def ingredient_update_flat() -> pd.DataFrame:
                     results.append(
                         {
                             "ingredient": ingredient,
-                            "qty": effective_multiplier,
-                            "uofm": uofm,
+                            "qty": component_qty,
+                            "uofm": comp["uofm"],
                         }
                     )
 
@@ -345,7 +351,6 @@ def ingredient_update_flat() -> pd.DataFrame:
                 "uofm",
             ]
         ]
-        print(flat_df.head(25))
 
         try:
             db.execute('truncate table "recipe_ingredients_flat"')

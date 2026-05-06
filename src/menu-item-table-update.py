@@ -18,6 +18,28 @@ def update_menu_item_table(csv_path: str):
     # split Name column into menu_item and concept
     df[["concept", "menu_item"]] = df["Name"].str.split(" - ", n=1, expand=True)
 
+    # create dictionary for category_2_sort_map
+    category_2_sort_map = {
+        "Appetizer": 1,
+        "Salad": 2,
+        "Sandwich": 3,
+        "Entree": 4,
+        "Side": 5,
+        "Dessert": 6,
+        "Early Evening": 7,
+        "Brunch": 8,
+        "Kid Meal": 9,
+        "Add-On": 10,
+        "Beverage": 11,
+        "Special": 12,
+        "Catering": 13,
+        "No Charge": 14,
+        "Beer": 15,
+        "Wine": 16,
+        "Liquor": 17,
+        "None": 18,
+    }
+
     # Step 2: Remove unnecessary columns
     df = df[["Id", "menu_item", "concept", "Category 1", "Category 2", "Category 3"]]
     df = df.rename(
@@ -28,7 +50,11 @@ def update_menu_item_table(csv_path: str):
             "Category 3": "category_3",
         }
     )
-    df.info()
+    df["category_2"] = df["category_2"].str.strip().str.title()
+    df["category_2_sort"] = df["category_2"].map(category_2_sort_map).fillna(18)
+    missing = df[df["category_2_sort"].isna()]["category_2"].unique()
+    if len(missing) > 0:
+        raise ValueError(f"Missing category_2 mappings: {missing}")
 
     # import distinct menuitem and salesaccount from sales_detail table and merge with df
 
@@ -68,7 +94,6 @@ def update_menu_item_table(csv_path: str):
             how="left",
         ).drop(columns=["sales_account_name", "sales_account"])
         df = df.drop_duplicates(subset=["menu_item_id"])
-        print(df)
 
         records = df[
             [
@@ -79,11 +104,12 @@ def update_menu_item_table(csv_path: str):
                 "category_2",
                 "category_3",
                 "sales_account_id",
+                "category_2_sort",
             ]
         ].values.tolist()
         db.executemany(
             """
-            INSERT INTO menu_items (menu_item_id, menu_item, concept, category_1, category_2, category_3, sales_account_id)
+            INSERT INTO menu_items (menu_item_id, menu_item, concept, category_1, category_2, category_3, sales_account_id, category_2_sort)
             VALUES %s
             ON CONFLICT (menu_item_id) DO UPDATE
             SET menu_item = EXCLUDED.menu_item,
@@ -91,7 +117,8 @@ def update_menu_item_table(csv_path: str):
                 category_1 = EXCLUDED.category_1,
                 category_2 = EXCLUDED.category_2,
                 category_3 = EXCLUDED.category_3,
-                sales_account_id = EXCLUDED.sales_account_id
+                sales_account_id = EXCLUDED.sales_account_id,
+                category_2_sort = EXCLUDED.category_2_sort
             """,
             records,
         )

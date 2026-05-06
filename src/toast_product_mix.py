@@ -1,6 +1,11 @@
 """
-This script generates a daily product mix report for restaurant locations using Toast POS data. It retrieves order data, aggregates item sales (including special handling for items with size/price modifiers), merges with recipe cost data, and enriches with calendar information. The final report is saved as a CSV and written to a database table, providing detailed sales, pricing, and cost breakdowns by item and location for a given business date.
-The table is designed for power bi to analyze product mix trends, profitability, and inventory management across locations and time periods.
+This script generates a daily product mix report for restaurant locations using Toast POS data.
+It retrieves order data, aggregates item sales (including special handling for items with size/price modifiers),
+merges with recipe cost data, and enriches with calendar information.
+The final report is saved as a CSV and written to a database table, providing detailed sales, pricing,
+and cost breakdowns by item and location for a given business date.
+The table is designed for power bi to analyze product mix trends, profitability,
+and inventory management across locations and time periods.
 """
 
 import pandas as pd

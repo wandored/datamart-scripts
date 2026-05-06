@@ -33,7 +33,6 @@ def calculate_bread_basket(df, cur):
     stores_w_bread = (4, 9, 11, 15, 16, 17)
     df_bread = df[(df["store_id"].isin(stores_w_bread)) & (df["category2"] == "Entree")]
     for store in stores_w_bread:
-        print(store)
         cur.execute("SELECT name FROM restaurants WHERE id = %s", (store,))
         store_name = cur.fetchone()[0]
         bread_str = r"Bread.*Basket"
@@ -240,7 +239,7 @@ def main(product_mix_csv, menu_analysis_csv, date, year, period, engine, conn, c
     if hasattr(menu_engineering, "isnull") and hasattr(menu_engineering, "any"):
         null_rows = menu_engineering[menu_engineering.isnull().any(axis=1)]
         if not null_rows.empty:
-            print(null_rows.head(50))
+            null_rows.info()
 
     menu_engineering = menu_engineering.dropna()
 

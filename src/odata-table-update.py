@@ -231,4 +231,3 @@ if __name__ == "__main__":
         update_location(db)
         update_company(db)
         update_item(db)
-        # recreate_all_views(db)

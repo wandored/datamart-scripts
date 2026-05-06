@@ -7,12 +7,12 @@ MODULES = [
     "src.odata-table-update",
     "src.sales-account-update",
     "src.uofm-update",
+    "src.item-conversion-update",
     "src.recipe-table-update",
     "src.menu-item-table-update",
     "src.recipe-ingredients-flat",
     "src.weekly-item-base-cost",
     "src.recipe-ingredient-update",
-    "src.item-conversion-update",
     "src.menu-engineering-online",
 ]
 

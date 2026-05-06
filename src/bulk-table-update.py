@@ -55,32 +55,37 @@ def fetch_calendar_dates(conn, cur, **kwargs):
         raise RuntimeError(f"Database operation failed: {e}")
 
 
-def make_HTTP_request(url):
+def make_http_request(url, max_retries=3, timeout=60):
     all_records = []
-    while True:
-        if not url:
-            break
-        try:
-            r = requests.get(
-                url, auth=(Config.SRVC_USER, Config.SRVC_PSWRD), timeout=30
-            )
-            r.raise_for_status()
-        except requests.exceptions.Timeout:
-            print(f"Timeout while trying to reach {url}")
-            # handle timeout case, maybe retry or skip
-        except requests.exceptions.RequestException as e:
-            print(f"Request failed: {e}")
-            # handle other errors
-        if r.status_code == 200:
-            json_data = json.loads(r.text)
-            all_records = all_records + json_data["value"]
-            if "@odata.nextLink" in json_data:
-                url = json_data["@odata.nextLink"]
-            else:
+    while url:
+        for attempt in range(max_retries):
+            try:
+                r = requests.get(
+                    url, auth=(Config.SRVC_USER, Config.SRVC_PSWRD), timeout=timeout
+                )
+                r.raise_for_status()
                 break
-    jStr = StringIO(json.dumps(all_records))
-    df = pd.read_json(jStr)
-    return df
+            except requests.exceptions.Timeout:
+                logging.warning(
+                    f"Timeout while trying to reach {url}, attempt {attempt + 1}/{max_retries}"
+                )
+                time.sleep(2**attempt)
+            except requests.exceptions.RequestException as e:
+                logging.error(
+                    f"Request failed: {e}, attempt {attempt + 1}/{max_retries}"
+                )
+                time.sleep(2**attempt)
+        else:
+            logging.error(f"Failed to fetch {url} after {max_retries} attempts.")
+            break
+
+        json_data = r.json()
+        all_records.extend(json_data.get("value", []))
+        url = json_data.get("@odata.nextLink")
+
+    if not all_records:
+        return pd.DataFrame()
+    return pd.read_json(StringIO(json.dumps(all_records)))
 
 
 def upload_to_database(df, table_name, keys, key_column, cur, conn):
@@ -118,26 +123,21 @@ def upload_to_database(df, table_name, keys, key_column, cur, conn):
 
 
 def update_transaction(start, end, cur, conn, engine):
-    url_filter = "$filter=date ge {}T00:00:00Z and date le {}T00:00:00Z".format(
-        start, end
+    url = (
+        f"{Config.SRVC_ROOT}/Transaction"
+        f"?$select=transactionId,locationId,transactionNumber,companyId,date,type"
+        f"&$filter=date ge {start}T00:00:00Z and date le {end}T00:00:00Z"
     )
-    query = "$select=transactionId,locationId,transactionNumber,companyId,date,type&{}".format(
-        url_filter
-    )
-    url = "{}/Transaction?{}".format(Config.SRVC_ROOT, query)
-    df = make_HTTP_request(url)
+    df = make_http_request(url)
 
     if df.empty:
         logging.info("No data returned for the given date range.")
         return
-    df["transactionNumber"] = df["transactionNumber"].astype(str)
-    split_columns = df["transactionNumber"].str.split(" - ", expand=True)
-    df["transactionNumber"] = split_columns.apply(
-        lambda x: x[1] if len(x) > 1 else x[0], axis=1
+
+    df["transactionNumber"] = (
+        df["transactionNumber"].astype(str).str.split(" - ").str[-1]
     )
-    # df["transactionNumber"] = split_columns[1].where(
-    #     split_columns.shape[1] > 1, split_columns[0]
-    # )
+
     df = df.rename(
         columns={
             "transactionId": "transactionid",
@@ -147,49 +147,118 @@ def update_transaction(start, end, cur, conn, engine):
         }
     )
 
+    # Ensure datetime type
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if df["date"].isnull().any():
+        raise ValueError("Invalid date format in transaction data")
+
     try:
-        transaction_ids = df["transactionid"].unique().tolist()
-        key_column = "transactionid"
-        upload_to_database(df, "transaction", transaction_ids, key_column, cur, conn)
+        cur.execute("BEGIN;")
+
+        # Create temp staging table
+        cur.execute("""
+            CREATE TEMP TABLE temp_transaction (
+                transactionid text,
+                locationid text,
+                template text,
+                companyid text,
+                date timestamptz,
+                type text
+            ) ON COMMIT DROP;
+        """)
+
+        # Bulk load into temp table
+        values = [tuple(x) for x in df.to_numpy()]
+        insert_temp = """
+            INSERT INTO temp_transaction (
+                transactionid, locationid, template, companyid, date, type
+            ) VALUES %s
+        """
+        execute_values(cur, insert_temp, values)
+
+        # Upsert into target table
+        upsert_query = """
+            INSERT INTO transaction (
+                transactionid, locationid, template, companyid, date, type
+            )
+            SELECT
+                t.transactionid,
+                t.locationid,
+                t.template,
+                t.companyid,
+                t.date,
+                t.type
+            FROM temp_transaction t
+            ON CONFLICT (transactionid) DO UPDATE
+            SET
+                locationid = EXCLUDED.locationid,
+                template   = EXCLUDED.template,
+                companyid  = EXCLUDED.companyid,
+                date       = EXCLUDED.date,
+                type       = EXCLUDED.type;
+        """
+
+        cur.execute(upsert_query)
+
+        conn.commit()
+        logging.info(f"Upserted {len(df)} transactions")
+
+        return df["transactionid"].tolist()
+
     except Exception as e:
-        print(f"Failed to upload data to the database: {e}")
-        raise
-    return 0
+        conn.rollback()
+        logging.error("Error in update_transaction", exc_info=e)
+        return 1
+    # try:
+    #     transaction_ids = df["transactionid"].unique().tolist()
+    #     upload_to_database(
+    #         df, "transaction", transaction_ids, "transactionid", cur, conn
+    #     )
+    # except Exception as e:
+    #     logging.error(f"Failed to upload data to the database: {e}")
+    #     raise
 
 
 def update_transaction_detail(start, end, cur, conn, engine):
-    # get transactionid from transaction table and update transaction_detail table with transactionid
-    url_filter = "$filter=date ge {}T00:00:00Z and date le {}T00:00:00Z".format(
-        start, end
-    )
-    query = "$select=transactionId&{}".format(url_filter)
-    url = "{}/Transaction?{}".format(Config.SRVC_ROOT, query)
-    df = make_HTTP_request(url)
-    if df.empty:
-        logging.info("No data returned for the given date range.")
-        return
+    logging.info(f"Updating transaction_detail for {start} to {end}")
 
-    transid_list = df["transactionId"].tolist()
-    transid_list = list(set(transid_list))
-    # split transid_list into chunks of 10
+    # Step 1: get all transactionIds for the date range
+    url = (
+        f"{Config.SRVC_ROOT}/Transaction"
+        f"?$select=transactionId"
+        f"&$filter=date ge {start}T00:00:00Z and date le {end}T00:00:00Z"
+    )
+
+    df_ids = make_http_request(url)
+
+    if df_ids.empty:
+        logging.info("No transactions found for date range.")
+        return 0
+
+    transid_list = df_ids["transactionId"].dropna().unique().tolist()
+
+    # Step 2: fetch all details
     dfs = []
     for tl in tqdm(transid_list, desc="Fetching Transaction Details", unit="txn"):
-        url_filter = "$filter=transactionId eq {}".format(tl)
-        query = "$select=transactionId,locationId,glAccountId,itemId,credit,debit,amount,quantity,previousCountTotal,adjustment,unitOfMeasureName&{}".format(
-            url_filter
+        url = (
+            f"{Config.SRVC_ROOT}/TransactionDetail"
+            f"?$select=transactionId,locationId,glAccountId,itemId,"
+            f"credit,debit,amount,quantity,previousCountTotal,adjustment,unitOfMeasureName"
+            f"&$filter=transactionId eq {tl}"
         )
-        url = "{}/TransactionDetail?{}".format(Config.SRVC_ROOT, query)
-        df = make_HTTP_request(url)
+        df = make_http_request(url)
         if not df.empty:
             dfs.append(df)
+
     if not dfs:
-        return
+        logging.warning(
+            "No transaction_detail data returned. Aborting to avoid data loss."
+        )
+        return 1
+
     df = pd.concat(dfs, ignore_index=True)
 
-    if df.empty:
-        logging.info("No data returned for the given date range.")
-        return
-
+    # Step 3: normalize columns
     df = df.rename(
         columns={
             "transactionId": "transactionid",
@@ -200,59 +269,184 @@ def update_transaction_detail(start, end, cur, conn, engine):
             "unitOfMeasureName": "unitofmeasurename",
         }
     )
-    # append a new column called date with values set to NULL
-    df["date"] = None
-    # query the transaction table for the date and transactionid
-    query = "SELECT date, transactionid FROM transaction WHERE transactionid = ANY(%s)"
-    df2 = pd.read_sql(query, engine, params=(transid_list,))
-    # query = """ SELECT date, transactionid FROM transaction
-    #             WHERE date >= '{}' AND date < '{}'
-    #             ORDER BY date""".format(
-    #     start, end
-    # )
-    # df2 = pd.read_sql(query, engine)
-    # where transaction id match add the date to the transaction detail table
-    df = pd.merge(df, df2, on=["transactionid"])
-    # drop date_x and rename date_y to date
-    df.drop("date_x", axis=1, inplace=True)
-    df.rename(columns={"date_y": "date"}, inplace=True)
-    # convert date to datetime
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    # Step 4: attach date from transaction table
+    query = """
+        SELECT transactionid, date
+        FROM transaction
+        WHERE date >= %s AND date < %s
+    """
+    df_tx = pd.read_sql(query, engine, params=(start, end))
+
+    df = df.merge(df_tx, on="transactionid", how="inner")
+
     if df["date"].isnull().any():
-        raise ValueError("Invalid date format encountered in the data.")
-
-    try:
-        if transid_list:
-            cur.execute(
-                'DELETE FROM "transaction_detail" WHERE transactionid = ANY(%s)',
-                (transid_list,),
-            )
-            conn.commit()
-            print(f"Deleted {cur.rowcount} rows from table: transaction_detail")
-    except Exception as e:
-        logging.error("Error deleting data: %s", e)
-        conn.rollback()
-        return 1
-
-    try:
-        columns = list(df.columns)
-        values = [tuple(x) for x in df.to_numpy()]
-        insert_query = sql.SQL("INSERT INTO {} ({}) VALUES %s").format(
-            sql.Identifier("transaction_detail"),
-            sql.SQL(", ").join(map(sql.Identifier, columns)),
+        raise ValueError(
+            "Null dates after merge — indicates missing parent transactions"
         )
-        execute_values(cur, insert_query, values)
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    try:
+        cur.execute("BEGIN;")
+
+        # Step 5: create temp staging table
+        cur.execute("""
+            CREATE TEMP TABLE temp_transaction_detail (
+                transactionid text,
+                locationid text,
+                glaccountid text,
+                itemid text,
+                credit double precision,
+                debit double precision,
+                amount double precision,
+                quantity double precision,
+                previouscounttotal double precision,
+                adjustment double precision,
+                unitofmeasurename text,
+                date timestamptz
+            ) ON COMMIT DROP;
+        """)
+
+        # Step 6: bulk insert into temp table
+        values = [tuple(x) for x in df.to_numpy()]
+        insert_temp = """
+            INSERT INTO temp_transaction_detail (
+                transactionid, locationid, glaccountid, itemid,
+                credit, debit, amount, quantity,
+                previouscounttotal, adjustment, unitofmeasurename, date
+            ) VALUES %s
+        """
+        execute_values(cur, insert_temp, values)
+
+        # Step 7: delete by date range (partition-pruned)
+        cur.execute(
+            """
+            DELETE FROM transaction_detail
+            WHERE date >= %s AND date < %s
+        """,
+            (start, end),
+        )
+
+        # Step 8: insert from staging
+        cur.execute("""
+            INSERT INTO transaction_detail (
+                transactionid, locationid, glaccountid, itemid,
+                credit, debit, amount, quantity,
+                previouscounttotal, adjustment, unitofmeasurename, date
+            )
+            SELECT
+                transactionid, locationid, glaccountid, itemid,
+                credit, debit, amount, quantity,
+                previouscounttotal, adjustment, unitofmeasurename, date
+            FROM temp_transaction_detail;
+        """)
+
         conn.commit()
-    except IntegrityError as e:
-        logging.error("Error writing to database: %s", e)
-        conn.rollback()
-        return 1
+        logging.info(
+            f"Rebuilt transaction_detail for {start} to {end} ({len(df)} rows)"
+        )
+
+        return 0
+
     except Exception as e:
-        logging.error("Error writing to database: %s", e)
         conn.rollback()
+        logging.error("Error in update_transaction_detail", exc_info=e)
         return 1
 
-    return 0
+
+# def update_transaction_detail(start, end, cur, conn, engine):
+#     # get transactionid from transaction table and update transaction_detail table with transactionid
+#     logging.info(f"Updating transaction_detail for {start} to {end}")
+#
+#     url_filter = "$filter=date ge {}T00:00:00Z and date le {}T00:00:00Z".format(
+#         start, end
+#     )
+#     query = "$select=transactionId&{}".format(url_filter)
+#     url = "{}/Transaction?{}".format(Config.SRVC_ROOT, query)
+#     df = make_http_request(url)
+#     if df.empty:
+#         logging.info("No data returned for the given date range.")
+#         return
+#
+#     transid_list = df["transactionId"].tolist()
+#     transid_list = list(set(transid_list))
+#     # split transid_list into chunks of 10
+#     dfs = []
+#     for tl in tqdm(transid_list, desc="Fetching Transaction Details", unit="txn"):
+#         url_filter = "$filter=transactionId eq {}".format(tl)
+#         query = "$select=transactionId,locationId,glAccountId,itemId,credit,debit,amount,quantity,previousCountTotal,adjustment,unitOfMeasureName&{}".format(
+#             url_filter
+#         )
+#         url = "{}/TransactionDetail?{}".format(Config.SRVC_ROOT, query)
+#         df = make_http_request(url)
+#         if not df.empty:
+#             dfs.append(df)
+#     if not dfs:
+#         return
+#     df = pd.concat(dfs, ignore_index=True)
+#
+#     if df.empty:
+#         logging.info("No data returned for the given date range.")
+#         return
+#
+#     df = df.rename(
+#         columns={
+#             "transactionId": "transactionid",
+#             "locationId": "locationid",
+#             "glAccountId": "glaccountid",
+#             "itemId": "itemid",
+#             "previousCountTotal": "previouscounttotal",
+#             "unitOfMeasureName": "unitofmeasurename",
+#         }
+#     )
+#     # append a new column called date with values set to NULL
+#     df["date"] = None
+#     # query the transaction table for the date and transactionid
+#     query = "SELECT date, transactionid FROM transaction WHERE transactionid = ANY(%s)"
+#     df2 = pd.read_sql(query, engine, params=(transid_list,))
+#     # where transaction id match add the date to the transaction detail table
+#     df = pd.merge(df, df2, on=["transactionid"])
+#     # drop date_x and rename date_y to date
+#     df.drop("date_x", axis=1, inplace=True)
+#     df.rename(columns={"date_y": "date"}, inplace=True)
+#     # convert date to datetime
+#     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+#     if df["date"].isnull().any():
+#         raise ValueError("Invalid date format encountered in the data.")
+#
+#     try:
+#         if transid_list:
+#             cur.execute(
+#                 'DELETE FROM "transaction_detail" WHERE transactionid = ANY(%s)',
+#                 (transid_list,),
+#             )
+#             conn.commit()
+#             print(f"Deleted {cur.rowcount} rows from table: transaction_detail")
+#     except Exception as e:
+#         logging.error("Error deleting data: %s", e)
+#         conn.rollback()
+#         return 1
+#
+#     try:
+#         columns = list(df.columns)
+#         values = [tuple(x) for x in df.to_numpy()]
+#         insert_query = sql.SQL("INSERT INTO {} ({}) VALUES %s").format(
+#             sql.Identifier("transaction_detail"),
+#             sql.SQL(", ").join(map(sql.Identifier, columns)),
+#         )
+#         execute_values(cur, insert_query, values)
+#         conn.commit()
+#     except IntegrityError as e:
+#         logging.error("Error writing to database: %s", e)
+#         conn.rollback()
+#         return 1
+#     except Exception as e:
+#         logging.error("Error writing to database: %s", e)
+#         conn.rollback()
+#         return 1
+#
+#     return 0
 
 
 def update_labor_detail(start, end, cur, conn, engine):
@@ -266,7 +460,7 @@ def update_labor_detail(start, end, cur, conn, engine):
         url_filter
     )
     url = "{}/LaborDetail?{}".format(Config.SRVC_ROOT, query)
-    df = make_HTTP_request(url)
+    df = make_http_request(url)
     if df.empty:
         logging.info("No data returned for the given date range.")
         return
@@ -336,22 +530,108 @@ def update_labor_detail(start, end, cur, conn, engine):
     return 0
 
 
+# def update_sales_detail(start, end, cur, conn, engine):
+#     url_filter = "$filter=date ge {}T00:00:00Z and date le {}T00:00:00Z".format(
+#         start, end
+#     )
+#     url = "{}/SalesDetail?{}".format(Config.SRVC_ROOT, url_filter)
+#     df = make_http_request(url)
+#
+#     if df.empty:
+#         logging.info("No data returned for the given date range.")
+#         return
+#     df["menuitem"] = df["menuitem"].str.split(" - ", expand=True)[1]
+#     # drop unwanted columns
+#     df.drop(
+#         columns=[
+#             "customerPOSText",
+#             "company",
+#             "salesID",
+#             "houseAccountTransaction",
+#             "transactionDetailID",
+#             "cateringEvent",
+#             "createdOn",
+#             "modifiedOn",
+#             "menuItemId",
+#             "createdBy",
+#             "modifiedBy",
+#         ],
+#         inplace=True,
+#     )
+#
+#     df = df.rename(
+#         columns={
+#             "salesdetailID": "salesdetailid",
+#             "salesAccount": "salesaccount",
+#             "dailySalesSummaryId": "dailysalessummaryid",
+#         }
+#     )
+#     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+#     df.to_sql("temp_table", engine, if_exists="replace", index=False)
+#     # Remove old records for the same location and date, but different dailysalessummaryid
+#     # delete_query = sql.SQL(
+#     #     """
+#     #     DELETE FROM {target}
+#     #     USING {temp}
+#     #     WHERE {target}.location = {temp}.location
+#     #     AND {target}.date = {temp}.date
+#     #     AND {target}.dailysalessummaryid <> {temp}.dailysalessummaryid
+#     #     """
+#     # ).format(
+#     #     target=sql.Identifier("sales_detail"),
+#     #     temp=sql.Identifier("temp_table"),
+#     # )
+#     delete_query = sql.SQL("""
+#         DELETE FROM {target} t
+#         WHERE (t.date, t.location) IN (
+#             SELECT DISTINCT date, location FROM {temp}
+#         )
+#         AND NOT EXISTS (
+#             SELECT 1
+#             FROM {temp} s
+#             WHERE s.date = t.date
+#               AND s.location = t.location
+#               AND s.dailysalessummaryid = t.dailysalessummaryid
+#         )
+#     """).format(
+#         target=sql.Identifier("sales_detail"),
+#         temp=sql.Identifier("temp_table"),
+#     )
+#
+#     cur.execute(delete_query)
+#     conn.commit()
+#     logging.info(
+#         "Deleted old sales_employee records with outdated dailysalessummaryid."
+#     )
+#
+#     try:
+#         salesdetail_ids = df["salesdetailid"].unique().tolist()
+#         key_column = "salesdetailid"
+#         upload_to_database(df, "sales_detail", salesdetail_ids, key_column, cur, conn)
+#     except Exception as e:
+#         print(f"Failed to upload data to the database: {e}")
+#         raise
+#     return 0
+
+
 def update_sales_detail(start, end, cur, conn, engine):
     url_filter = "$filter=date ge {}T00:00:00Z and date le {}T00:00:00Z".format(
         start, end
     )
     url = "{}/SalesDetail?{}".format(Config.SRVC_ROOT, url_filter)
-    df = make_HTTP_request(url)
+
+    df = make_http_request(url)
 
     if df.empty:
         logging.info("No data returned for the given date range.")
-        return
+        return 0
+
+    # --- Transformations ---
     df["menuitem"] = df["menuitem"].str.split(" - ", expand=True)[1]
-    # drop unwanted columns
+
     df.drop(
         columns=[
             "customerPOSText",
-            "void",
             "company",
             "salesID",
             "houseAccountTransaction",
@@ -373,35 +653,77 @@ def update_sales_detail(start, end, cur, conn, engine):
             "dailySalesSummaryId": "dailysalessummaryid",
         }
     )
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df.to_sql("temp_table", engine, if_exists="replace", index=False)
-    # Remove old records for the same location and date, but different dailysalessummaryid
-    delete_query = sql.SQL(
-        """
-        DELETE FROM {target}
-        USING {temp}
-        WHERE {target}.location = {temp}.location
-        AND {target}.date = {temp}.date
-        AND {target}.dailysalessummaryid <> {temp}.dailysalessummaryid
-        """
-    ).format(
-        target=sql.Identifier("sales_detail"),
-        temp=sql.Identifier("temp_table"),
-    )
+    dss_ids = df["dailysalessummaryid"].unique().tolist()
+    print(f"{len(dss_ids)} DSS Id's on {df['date']}")
 
-    cur.execute(delete_query)
-    conn.commit()
-    logging.info(
-        "Deleted old sales_employee records with outdated dailysalessummaryid."
-    )
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    # --- Load into temp table ---
+    temp_table = "temp_sales_detail"
+
+    df.to_sql(temp_table, engine, if_exists="replace", index=False)
 
     try:
-        salesdetail_ids = df["salesdetailid"].unique().tolist()
-        key_column = "salesdetailid"
-        upload_to_database(df, "sales_detail", salesdetail_ids, key_column, cur, conn)
+        # Wrap everything in a single transaction
+        with conn:
+            with conn.cursor() as cur:
+                # 1. Delete obsolete DSS versions (set-based)
+                delete_query = sql.SQL("""
+                    DELETE FROM sales_detail t
+                    WHERE (t.date, t.location) IN (
+                        SELECT DISTINCT date, location FROM {temp}
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM {temp} s
+                        WHERE s.date = t.date
+                          AND s.location = t.location
+                          AND s.dailysalessummaryid = t.dailysalessummaryid
+                    )
+                """).format(temp=sql.Identifier(temp_table))
+
+                cur.execute(delete_query)
+                logging.info("Deleted obsolete DSS versions from sales_detail.")
+
+                # 2. Upsert from temp table
+                upsert_query = sql.SQL("""
+                    INSERT INTO sales_detail (
+                        salesdetailid,
+                        date,
+                        location,
+                        dailysalessummaryid,
+                        salesaccount,
+                        menuitem,
+                        quantity,
+                        amount
+                    )
+                    SELECT
+                        salesdetailid,
+                        date,
+                        location,
+                        dailysalessummaryid,
+                        salesaccount,
+                        menuitem,
+                        quantity,
+                        amount
+                    FROM {temp}
+                    ON CONFLICT (salesdetailid, date)
+                    DO UPDATE SET
+                        location = EXCLUDED.location,
+                        dailysalessummaryid = EXCLUDED.dailysalessummaryid,
+                        salesaccount = EXCLUDED.salesaccount,
+                        menuitem = EXCLUDED.menuitem,
+                        quantity = EXCLUDED.quantity,
+                        amount = EXCLUDED.amount
+                """).format(temp=sql.Identifier(temp_table))
+
+                cur.execute(upsert_query)
+                logging.info("Upserted sales_detail records.")
+
     except Exception as e:
-        print(f"Failed to upload data to the database: {e}")
+        logging.error(f"Failed to update sales_detail: {e}")
         raise
+
     return 0
 
 
@@ -410,7 +732,7 @@ def update_sales_employee(start, end, cur, conn, engine):
         start, end
     )
     url = "{}/SalesEmployee?{}".format(Config.SRVC_ROOT, url_filter)
-    df = make_HTTP_request(url)
+    df = make_http_request(url)
 
     if df.empty:
         logging.info("No data returned for the given date range.")
@@ -487,7 +809,7 @@ def update_sales_payment(start, end, cur, conn, engine):
         start, end
     )
     url = "{}/SalesPayment?{}".format(Config.SRVC_ROOT, url_filter)
-    df = make_HTTP_request(url)
+    df = make_http_request(url)
 
     if df.empty:
         logging.info("No data returned for the given date range.")
@@ -554,8 +876,27 @@ def update_sales_payment(start, end, cur, conn, engine):
     return 0
 
 
+def get_dss_list(start, end, cur, conn, engine):
+    url = (
+        f"{Config.SRVC_ROOT}/salesPayment"
+        f"?$filter=date ge {start}T00:00:00Z and date lt {end}T00:00:00Z"
+    )
+    df = make_http_request(url)
+    # remove time from date
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df = df[["date", "dailySalesSummaryId", "location", "salespaymentId"]]
+    if df.empty:
+        logging.info("No data returned for the given date range.")
+        return
+    df = df.drop_duplicates()
+    print(df)
+    return
+
+
 def main(start_date, end_date, step, cur, conn, engine):
+
     update_function = [
+        # get_dss_list,
         update_transaction,
         update_transaction_detail,
         update_labor_detail,

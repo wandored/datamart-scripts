@@ -81,6 +81,117 @@ def calculate_current_cost_per_item(cur, location, end_of_week_date):
     return df
 
 
+def get_zero_cost_items_from_stock_count(cur, location, item_ids, end_of_week_date):
+    item_filter = ""
+    params = [location, end_of_week_date]
+    if item_ids:
+        item_filter = " AND scp.item_id = ANY(%s)"
+        params.append(item_ids)
+    query = f"""
+        SELECT date, store_id, item_id, item, quantity, uofm, amount
+        FROM (
+            SELECT
+                scp.date,
+                scp.store_id,
+                scp.item_id,
+                item.name AS item,
+                scp.quantity,
+                scp.uofm,
+                scp.amount,
+                ROW_NUMBER() OVER (PARTITION BY scp.item_id ORDER BY scp.date ASC) AS rn
+            FROM stock_count_pbi scp
+            JOIN item ON scp.item_id = item.itemid
+            WHERE scp.store_id = %s AND scp.date <= %s{item_filter}
+        ) ranked
+        WHERE rn = 1
+    """
+    cur.execute(query, tuple(params))
+    rows = cur.fetchall()
+    if not rows:
+        print(
+            f"No stock count entries found for location {location} and items {item_ids} up to {end_of_week_date}"
+        )
+        return pd.DataFrame()  # Return empty DataFrame if no stock count entries found
+    df = pd.DataFrame(rows, columns=rows[0].keys())
+    # merge with unitsofmeasure to get base_uofm
+    uofm_names = df["uofm"].unique().tolist()
+    uofm_query = """
+        SELECT uofm_id, name AS uofm, equivalent_qty, equivalent_uofm, base_uofm, base_qty
+        FROM unitsofmeasure
+        WHERE name = ANY(%s)
+    """
+    cur.execute(uofm_query, (uofm_names,))
+    uofm_rows = cur.fetchall()
+    if not uofm_rows:
+        print(f"No unit of measure entries found for items {item_ids}")
+        return df  # Return the original DataFrame if no unit of measure entries found
+    uofm_df = pd.DataFrame(uofm_rows, columns=uofm_rows[0].keys())
+    df = df.merge(uofm_df, on="uofm", how="left")
+    df["base_cost"] = df.apply(
+        lambda row: (
+            (row["amount"] / row["quantity"]) / row["base_qty"]
+            if row["quantity"] > 0 and row["base_qty"] > 0
+            else 0
+        ),
+        axis=1,
+    )
+    df = df.drop(columns=["quantity", "uofm", "amount", "base_qty"])
+    return df
+
+
+# def get_zero_cost_items_from_stock_count(cur, location, item_ids, end_of_week_date):
+#     query = """
+#         SELECT date, store_id, item_id, item, quantity, uofm, amount
+#         FROM (
+#             SELECT
+#                 scp.date,
+#                 scp.store_id,
+#                 scp.item_id,
+#                 item.name AS item,
+#                 scp.quantity,
+#                 scp.uofm,
+#                 scp.amount,
+#                 ROW_NUMBER() OVER (PARTITION BY scp.item_id ORDER BY scp.date ASC) AS rn
+#             FROM stock_count_pbi scp
+#             JOIN item ON scp.item_id = item.itemid
+#             WHERE scp.store_id = %s AND scp.date <= %s AND scp.item_id = ANY(%s)
+#         ) ranked
+#         WHERE rn = 1
+#     """
+#     cur.execute(query, (location, end_of_week_date, item_ids))
+#     rows = cur.fetchall()
+#     if not rows:
+#         print(
+#             f"No stock count entries found for location {location} and items {item_ids} up to {end_of_week_date}"
+#         )
+#         return pd.DataFrame()  # Return empty DataFrame if no stock count entries found
+#     df = pd.DataFrame(rows, columns=rows[0].keys())
+#     # merge with unitsofmeasure to get base_uofm
+#     uofm_names = df["uofm"].unique().tolist()
+#     uofm_query = """
+#         SELECT uofm_id, name AS uofm, equivalent_qty, equivalent_uofm, base_uofm, base_qty
+#         FROM unitsofmeasure
+#         WHERE name = ANY(%s)
+#     """
+#     cur.execute(uofm_query, (uofm_names,))
+#     uofm_rows = cur.fetchall()
+#     if not uofm_rows:
+#         print(f"No unit of measure entries found for items {item_ids}")
+#         return df  # Return the original DataFrame if no unit of measure entries found
+#     uofm_df = pd.DataFrame(uofm_rows, columns=uofm_rows[0].keys())
+#     df = df.merge(uofm_df, on="uofm", how="left")
+#     df["base_cost"] = df.apply(
+#         lambda row: (
+#             (row["amount"] / row["quantity"]) / row["base_qty"]
+#             if row["quantity"] > 0 and row["base_qty"] > 0
+#             else 0
+#         ),
+#         axis=1,
+#     )
+#     df = df.drop(columns=["quantity", "uofm", "amount", "base_qty"])
+#     return df
+
+
 def process_week(db, year, period, week):
     end_of_week_date, week_index, period_index = get_end_of_week_date(
         db.cur, year, period, week
@@ -98,6 +209,52 @@ def process_week(db, year, period, week):
         location_df: pd.DataFrame = calculate_current_cost_per_item(
             db.cur, id, end_of_week_date
         )
+        stock_count_df = get_zero_cost_items_from_stock_count(
+            db.cur, id, None, end_of_week_date
+        )
+        if not stock_count_df.empty:
+            if location_df.empty:
+                location_df = stock_count_df.copy()
+            else:
+                location_item_ids = location_df["item_id"].tolist()
+                location_df = location_df.merge(
+                    stock_count_df,
+                    on="item_id",
+                    how="left",
+                    suffixes=("", "_sc"),
+                    validate="many_to_one",
+                )
+                has_stock_count = location_df["base_cost_sc"].notna()
+                update_mask = (location_df["base_cost"] == 0) & has_stock_count
+                location_df.loc[update_mask, "base_cost"] = location_df.loc[
+                    update_mask, "base_cost_sc"
+                ]
+                location_df.loc[update_mask, "base_uofm"] = location_df.loc[
+                    update_mask, "base_uofm_sc"
+                ]
+                location_df.loc[update_mask, "date"] = location_df.loc[
+                    update_mask, "date_sc"
+                ]
+                location_df.loc[update_mask, "item"] = location_df.loc[
+                    update_mask, "item_sc"
+                ]
+                location_df = location_df.drop(
+                    columns=[
+                        "date_sc",
+                        "store_id_sc",
+                        "item_sc",
+                        "base_uofm_sc",
+                        "base_cost_sc",
+                    ],
+                    errors="ignore",
+                )
+                missing_items = stock_count_df[
+                    ~stock_count_df["item_id"].isin(location_item_ids)
+                ]
+                if not missing_items.empty:
+                    location_df = pd.concat(
+                        [location_df, missing_items], ignore_index=True
+                    )
         location_df["store_id"] = id
         location_df["year"] = year
         location_df["period"] = period
@@ -107,9 +264,66 @@ def process_week(db, year, period, week):
         weekly_item_base_cost_df = pd.concat(
             [weekly_item_base_cost_df, location_df], ignore_index=True
         )
-
     # drop rows with missing base_uofm
     weekly_item_base_cost_df = weekly_item_base_cost_df.dropna(subset=["base_uofm"])
+
+    # for id in store_id:
+    #     location_df: pd.DataFrame = calculate_current_cost_per_item(
+    #         db.cur, id, end_of_week_date
+    #     )
+    #     # for location_df items that have a base_cost of 0, find the most recent cost in stock_count_pbi
+    #     zero_cost_items = location_df[location_df["base_cost"] == 0]["item_id"].tolist()
+    #     zero_cost_items_df = location_df[location_df["base_cost"] == 0]
+    #     if not zero_cost_items_df.empty:
+    #         zero_cost_items_df = get_zero_cost_items_from_stock_count(
+    #             db.cur, id, zero_cost_items, end_of_week_date
+    #         )
+    #         print(zero_cost_items_df.head())
+    #         if not zero_cost_items_df.empty:
+    #             location_df = location_df.merge(
+    #                 zero_cost_items_df,
+    #                 on="item_id",
+    #                 how="left",
+    #                 suffixes=("", "_sc"),
+    #                 validate="many_to_one",
+    #             )
+    #             has_stock_count = location_df["base_cost_sc"].notna()
+    #             update_mask = (location_df["base_cost"] == 0) & has_stock_count
+    #             location_df.loc[update_mask, "base_cost"] = location_df.loc[
+    #                 update_mask, "base_cost_sc"
+    #             ]
+    #             location_df.loc[update_mask, "base_uofm"] = location_df.loc[
+    #                 update_mask, "base_uofm_sc"
+    #             ]
+    #             location_df.loc[update_mask, "date"] = location_df.loc[
+    #                 update_mask, "date_sc"
+    #             ]
+    #             location_df.loc[update_mask, "item"] = location_df.loc[
+    #                 update_mask, "item_sc"
+    #             ]
+    #             location_df = location_df.drop(
+    #                 columns=[
+    #                     "date_sc",
+    #                     "store_id_sc",
+    #                     "item_sc",
+    #                     "base_uofm_sc",
+    #                     "base_cost_sc",
+    #                 ],
+    #                 errors="ignore",
+    #             )
+    #         print(location_df[location_df["item_id"].isin(zero_cost_items)].head())
+    #
+    #     location_df["store_id"] = id
+    #     location_df["year"] = year
+    #     location_df["period"] = period
+    #     location_df["week"] = week
+    #     location_df["week_index"] = week_index
+    #     location_df["period_index"] = period_index
+    #     weekly_item_base_cost_df = pd.concat(
+    #         [weekly_item_base_cost_df, location_df], ignore_index=True
+    #     )
+    # # drop rows with missing base_uofm
+    # weekly_item_base_cost_df = weekly_item_base_cost_df.dropna(subset=["base_uofm"])
 
     # reorder columns
     weekly_item_base_cost_df = weekly_item_base_cost_df[

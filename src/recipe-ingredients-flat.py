@@ -23,11 +23,10 @@ def get_menu_recipe() -> pd.DataFrame:
     df = pd.read_csv("./downloads/MenuItems_R365.csv")
     # drop all rows where Category 1 is null
     df = df.dropna(subset=["Category 1"])
-    # keep only Name and Recipe columns
-    df = df[["Id", "Name", "Recipe"]]
+    df = df[["Id", "Name", "Recipe Name"]]
     # split Name column into two columns
     df[["concept", "menu_item"]] = df["Name"].str.split(" - ", expand=True)
-    df = df.rename(columns={"Id": "menu_item_id", "Recipe": "recipe"})
+    df = df.rename(columns={"Id": "menu_item_id", "Recipe Name": "recipe"})
     return df
 
 

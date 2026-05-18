@@ -78,9 +78,11 @@ def removeSpecial(df):
     regex_patterns = [
         r"^No ",
         r" Only$",
+        r" Tax$",
         r"^& ",
         r"^Seat ",
         r"Allergy$",
+        r"Outstanding$",
         r"for Salad.*",
         r".*for Steak.*",
         r".*for Sand.*",

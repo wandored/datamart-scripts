@@ -10,3 +10,7 @@ def get_daily_sales(client, business_date, location_id):
         businessDate=business_date,
         location=location_id,
     )
+
+
+def get_units_of_measure(client):
+    return client.get_resource("inventory", "units-of-measure")

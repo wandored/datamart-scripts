@@ -1,6 +1,8 @@
 # read UnitOfMeasure.csv file and upload to database
 import pandas as pd
 from db_utils.dbconnect import DatabaseConnection
+from db_utils.r365_utils import R365Client
+from db_utils.r365_importers import get_units_of_measure
 
 
 def find_renamed(old, new):
@@ -11,29 +13,27 @@ def find_renamed(old, new):
 
 
 def main():
-    file_path = "./downloads/UnitOfMeasure.csv"
-    uofm = pd.read_csv(
-        file_path,
-        usecols=[
-            "ID",
-            "Name",
-            "Equivalent Qty",
-            "Equivalent UofM",
-            "Measure Type",
-            "Base UofM",
-            "Base Qty",
-        ],
-    )
-    uofm = uofm.rename(
-        columns={
-            "ID": "uofm_id",
-            "Name": "name",
-            "Equivalent Qty": "equivalent_qty",
-            "Equivalent UofM": "equivalent_uofm",
-            "Measure Type": "measure_type",
-            "Base UofM": "base_uofm",
-            "Base Qty": "base_qty",
-        }
+    client = R365Client()
+    uofm_data = get_units_of_measure(client)
+
+    uofm = pd.DataFrame(
+        [
+            {
+                "uofm_id": row["id"],
+                "name": row["name"],
+                "equivalent_qty": row["equivalentQuantity"],
+                "equivalent_uofm": row["equivalentUnitOfMeasure"]["name"]
+                if row["equivalentUnitOfMeasure"]
+                else None,
+                "measure_type": row["measureType"],
+                "base_uofm": row["baseUnitOfMeasure"]["name"]
+                if row["baseUnitOfMeasure"]
+                else None,
+                "base_qty": row["baseQuantity"],
+                "active": row["isActive"],
+            }
+            for row in uofm_data
+        ]
     )
 
     with DatabaseConnection() as db:
@@ -68,12 +68,13 @@ def main():
                 "measure_type",
                 "base_uofm",
                 "base_qty",
+                "active",
             ]
         ].values.tolist()
 
         db.executemany(
             """
-            INSERT INTO unitsofmeasure (uofm_id, name, equivalent_qty, equivalent_uofm, measure_type, base_uofm, base_qty)
+            INSERT INTO unitsofmeasure (uofm_id, name, equivalent_qty, equivalent_uofm, measure_type, base_uofm, base_qty, active)
             VALUES %s
             ON CONFLICT (uofm_id) DO UPDATE
             SET name = EXCLUDED.name,
@@ -81,7 +82,8 @@ def main():
                 equivalent_uofm = EXCLUDED.equivalent_uofm,
                 measure_type = EXCLUDED.measure_type,
                 base_uofm = EXCLUDED.base_uofm,
-                base_qty = EXCLUDED.base_qty
+                base_qty = EXCLUDED.base_qty,
+                active = EXCLUDED.active
             """,
             records,
         )

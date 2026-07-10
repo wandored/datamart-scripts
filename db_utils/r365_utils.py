@@ -39,7 +39,7 @@ class R365Client:
 
         return None
 
-    def get_all(self, endpoint, params=None):
+    def get_all(self, endpoint, params=None, collection_key="items"):
 
         response = self.request(
             "GET",
@@ -48,7 +48,12 @@ class R365Client:
         )
 
         while response:
-            yield from response.get("items", [])
+            records = response.get(collection_key, [])
+
+            if isinstance(records, list):
+                yield from records
+            elif records is not None:
+                yield records
 
             next_link = response.get("nextLink")
 
@@ -60,6 +65,8 @@ class R365Client:
                 next_link,
             )
 
-    def get_resource(self, domain, resource, **params):
+    def get_resource(self, domain, resource, collection_key="items", **params):
         endpoint = f"/v1/{domain}/{resource}"
-        return list(self.get_all(endpoint, params=params))
+        return list(
+            self.get_all(endpoint, params=params, collection_key=collection_key)
+        )

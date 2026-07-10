@@ -9,7 +9,6 @@ from psycopg2.errors import UniqueViolation
 
 from db_utils.config import Config
 from db_utils.dbconnect import DatabaseConnection
-from db_utils.recreate_views import recreate_all_views
 
 
 def make_HTTP_request(url):

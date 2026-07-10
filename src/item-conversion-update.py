@@ -14,7 +14,6 @@ from psycopg2 import sql
 from psycopg2.errors import IntegrityError
 
 from db_utils.dbconnect import DatabaseConnection
-from db_utils.recreate_views import recreate_all_views
 
 
 def get_conversion_units():

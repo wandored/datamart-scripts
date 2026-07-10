@@ -10,7 +10,6 @@ from psycopg2 import sql
 from psycopg2.errors import IntegrityError, UniqueViolation
 
 from db_utils.dbconnect import DatabaseConnection
-from db_utils.recreate_views import recreate_all_views
 
 
 def get_date(product_mix_csv):
@@ -323,4 +322,3 @@ if __name__ == "__main__":
             db.conn,
             db.cur,
         )
-        recreate_all_views(db.conn)

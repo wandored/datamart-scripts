@@ -6,7 +6,6 @@ from psycopg2 import sql
 from psycopg2.errors import IntegrityError
 
 from db_utils.dbconnect import DatabaseConnection
-from db_utils.recreate_views import recreate_all_views
 
 
 def read_budget_files():
@@ -197,4 +196,3 @@ if __name__ == "__main__":
         process_budgets_xlsx(folder_path, output_path, year)
         # df = read_budget_files()
         write_to_database(db.cur, db.conn, db.engine, output_path, year)
-        recreate_all_views(db.conn)

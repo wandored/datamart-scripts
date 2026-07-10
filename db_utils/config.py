@@ -38,6 +38,7 @@ class Config:
         Path(config.get("OUTPUT_DIR", PROJECT_ROOT / "output")).expanduser().resolve()
     )
 
+    # Toast API configuration
     MANAGEMENT_GROUP_GUID = config.get("MANAGEMENT_GROUP_GUID")
     TOAST_RESTAURANT_EXTERNAL_ID = config.get("TOAST_RESTAURANT_EXTERNAL_ID")
     TOAST_API_ACCESS_URL = config.get("TOAST_API_ACCESS_URL")
@@ -45,6 +46,12 @@ class Config:
     CLIENT_ID = config.get("CLIENT_ID")
     CLIENT_SECRET = config.get("CLIENT_SECRET")
     LOCATION_DROP_LIST = config.get("LOCATION_DROP_LIST")
+
+    # R365 API configuration
+    R365_BASE_URL = config.get("R365_BASE_URL")
+    R365_TOKEN = config.get("R365_TOKEN")
+    R365_SECURITY_ID = config.get("R365_SECURITY_ID")
+    R365_TENANT_ID = config.get("R365_TENANT_ID")
 
     MAIL_USER = config.get("EMAIL_USER")
     MAIL_PASS = config.get("EMAIL_PASS")

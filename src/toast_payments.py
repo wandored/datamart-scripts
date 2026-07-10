@@ -149,6 +149,18 @@ def main():
     master_df.to_csv(file_name, index=False)
     print(f"Report saved to {file_name}")
 
+    # Group by location_name and cardEntryMode and sum the amount for each group, then print the results with the count of payments in each group
+    summary_df = (
+        master_df.groupby(["location_name", "cardEntryMode"])
+        .agg(
+            total_amount=pd.NamedAgg(column="amount", aggfunc="sum"),
+            count=pd.NamedAgg(column="amount", aggfunc="count"),
+        )
+        .reset_index()
+    )
+    print("\nSummary by Location and Card Entry Mode:")
+    print(summary_df)
+
 
 if __name__ == "__main__":
     main()

@@ -1,7 +1,7 @@
 import pandas as pd
 import argparse
 from db_utils.config import Config
-from db_utils.toast_utils import get_access_token, get_response_data
+from db_utils.toast_utils import ToastClient
 from db_utils.dbconnect import DatabaseConnection
 
 
@@ -20,6 +20,7 @@ def get_locations(cur) -> pd.DataFrame:
 
 
 def get_payment_identifiers(api_access_url, token, guid, business_date):
+    toast_client = ToastClient()
     # Return a combined list of the GUIDs for each payment type made during one restaurant business day.
     guid_list = []
     for payment_type in ["paid", "refund", "void"]:
@@ -29,7 +30,7 @@ def get_payment_identifiers(api_access_url, token, guid, business_date):
             "Toast-Restaurant-External-ID": guid,
             "Authorization": f"Bearer {token}",
         }
-        resp = get_response_data(url, headers=headers, params=payload)
+        resp = toast_client.get_response_data(url, headers=headers, params=payload)
         if resp:
             guid_list.extend(resp)
 
@@ -37,6 +38,7 @@ def get_payment_identifiers(api_access_url, token, guid, business_date):
 
 
 def get_payment_report(api_access_url, token, guid, payment_id_list):
+    toast_client = ToastClient()
     # For each payment GUID, get the detailed report and combine into a single dataframe.
     all_payments_df = pd.DataFrame()
     for i, payment_id in enumerate(payment_id_list):
@@ -45,7 +47,7 @@ def get_payment_report(api_access_url, token, guid, payment_id_list):
             "Toast-Restaurant-External-ID": guid,
             "Authorization": f"Bearer {token}",
         }
-        resp = get_response_data(url, headers=headers)
+        resp = toast_client.get_response_data(url, headers=headers)
         payment_df = pd.json_normalize(resp)
         if i == 0:
             all_payments_df = payment_df
@@ -57,6 +59,7 @@ def get_payment_report(api_access_url, token, guid, payment_id_list):
 
 
 def main():
+    toast_client = ToastClient()
     # add argument parser for payment, refund and void business dates
     parser = argparse.ArgumentParser(
         description="Generate payment report for given business dates."
@@ -85,8 +88,8 @@ def main():
     with DatabaseConnection() as db:
         locations = get_locations(db.cur)
 
-    api_access_url = Config.TOAST_API_ACCESS_URL
-    token = get_access_token(api_access_url)
+    api_access_url = toast_client.get_api_access_url()
+    token = toast_client.get_access_token()
     if not isinstance(token, dict):
         raise TypeError("Expected token to be a dictionary")
     access_token = token.get("accessToken", "")

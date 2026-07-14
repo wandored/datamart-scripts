@@ -10,39 +10,40 @@ import os
 import pandas as pd
 
 
-def main():
+def get_toast_menu_items():
     # read in the two csv files
-    menu_item_export = pd.read_csv(
+    toast_df = pd.read_csv(
         "./downloads/MenuItem_Export_toast.csv",
         usecols=["Name", "Created Date", "Archived"],
         encoding="ISO-8859-1",
     )
     # drop all rows where the Archived column is Yes
-    menu_item_export = menu_item_export[menu_item_export["Archived"] == "No"]
+    toast_df = toast_df[toast_df["Archived"] == "No"]
     # drop the Archived column
-    menu_item_export = menu_item_export.drop(columns=["Archived"])
+    toast_df = toast_df.drop(columns=["Archived"])
     # change the Created Date column to datetime
-    menu_item_export["Created Date"] = pd.to_datetime(menu_item_export["Created Date"])
-    menu_item_export = menu_item_export.sort_values(
-        by=["Created Date"], ascending=[False]
-    )
+    toast_df["Created Date"] = pd.to_datetime(toast_df["Created Date"])
+    toast_df = toast_df.sort_values(by=["Created Date"], ascending=[False])
+    return toast_df
 
-    r365_menu_items = pd.read_csv(
+
+def get_r365_menu_items():
+    r365_df = pd.read_csv(
         "./downloads/MenuItems_R365.csv",
         usecols=["Name", "Category 1", "Category 2", "Category 3"],
         encoding="ISO-8859-1",
     )
     # drop all rows that do not have "Casual" or "Steakhouse" in Name column
-    r365_menu_items = r365_menu_items[
-        r365_menu_items["Name"].str.contains("Casual|Steakhouse")
-    ]
+    r365_df = r365_df[r365_df["Name"].str.contains("Casual|Steakhouse")]
 
     # remove the prefix from r365_menu_items Name column
-    r365_menu_items["Name"] = (
-        r365_menu_items["Name"]
-        .str.replace("Casual - ", "")
-        .str.replace("Steakhouse - ", "")
+    r365_df["Name"] = (
+        r365_df["Name"].str.replace("Casual - ", "").str.replace("Steakhouse - ", "")
     )
+    return r365_df
+
+
+def clean_data(menu_item_export, r365_menu_items):
     # remove rows with any value in Category1, Category2 or Category3 columns from r365_menu_items
     unmapped_menu_items = r365_menu_items[
         r365_menu_items[["Category 1", "Category 2", "Category 3"]].isnull().all(axis=1)
@@ -83,6 +84,14 @@ def main():
         ~new_menu_items["Name"].str.endswith("for Cali-Club")
     ]
     new_menu_items = new_menu_items[~new_menu_items["Name"].str.endswith("for Edge")]
+
+    return new_menu_items, unordered_menu_items
+
+
+def main():
+    menu_item_export = get_toast_menu_items()
+    r365_menu_items = get_r365_menu_items()
+    new_menu_items, unmapped_menu_items = clean_data(menu_item_export, r365_menu_items)
 
     # write the new file to a csv file
     new_menu_items.to_csv("./output/new_menu_item_export.csv", index=False)

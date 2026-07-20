@@ -18,3 +18,24 @@ def get_units_of_measure(client):
 
 def get_purchase_items(client):
     return client.get_resource("inventory", "items")
+
+
+def get_inventory_counts(
+    client,
+    business_date_start=None,
+    business_date_end=None,
+    status=None,
+    location_id=None,
+    include_data="none",
+    page_size=250,
+):
+    return client.get_resource(
+        "inventory",
+        "inventory-counts",
+        dateOfBusinessStart=business_date_start,
+        dateOfBusinessEnd=business_date_end,
+    )
+
+
+def get_inventory_count_by_id(client, id):
+    return client.get_resource("inventory", "inventory-counts", id)

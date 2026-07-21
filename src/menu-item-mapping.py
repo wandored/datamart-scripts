@@ -6,12 +6,33 @@ print the new file to a new csv file
 """
 
 import os
+from datetime import datetime, timedelta
+from db_utils.r365_utils import R365Client
+from db_utils.r365_importers import (
+    get_daily_sales,
+    get_inventory_counts,
+    get_inventory_count_by_id,
+)
 
 import pandas as pd
 from db_utils.dbconnect import DatabaseConnection
 from db_utils.config import Config
 from db_utils.toast_utils import get_restaurants, get_access_token, get_response_data
 from db_utils.r365_utils import R365Client
+
+
+def get_locations(db):
+    db.cur.execute(
+        """
+        SELECT locationid, name, toast_guid
+        FROM restaurants
+        WHERE email IS NOT Null
+        ORDER BY name
+        """
+    )
+    locations = db.cur.fetchall()
+
+    return locations
 
 
 # def get_toast_menu_items():
@@ -91,22 +112,21 @@ def clean_data(toast_export, r365_export):
     return new_menu_items, unordered_menu_items
 
 
-def get_toast_menu_item_list():
-    guid = Config.TOAST_RESTAURANT_EXTERNAL_ID
+def get_toast_menu_item_list(locations):
+    # guid = Config.TOAST_RESTAURANT_EXTERNAL_ID
     api_access_url = Config.TOAST_API_ACCESS_URL
     token = get_access_token(api_access_url)
     if not isinstance(token, dict):
         raise TypeError("Expected token to be a dictionary")
     access_token = token.get("accessToken", "")
 
-    locations = get_restaurants(api_access_url, access_token)
-
     # collect all menu guids for each location guid
     toast_menu_items = pd.DataFrame()
-    for location_guid in locations:
+    for location in locations:
+        toast_guid = location["toast_guid"]
         url = api_access_url + "/config/v2/menuItems/"
         headers = {
-            "Toast-Restaurant-External-ID": location_guid,
+            "Toast-Restaurant-External-ID": toast_guid,
             "Authorization": f"Bearer {access_token}",
         }
         response = get_response_data(url, headers=headers)
@@ -122,29 +142,55 @@ def get_toast_menu_item_list():
     return toast_menu_items
 
 
-def get_r365_menu_item_list():
-    client = R365Client()
-    business_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    pos_items = {}
-    for location in locations:
-        menu_items = get_daily_sales(client, business_date, location)
-        for menu_item in menu_items:
-            tickets = menu_item.get("salesTickets", [])
-            for ticket in tickets:
-                details = ticket.get("salesDetails", [])
-                for detail in details:
-                    pos_item = detail.get("posItem")
-                    if pos_item:
-                        pos_items[pos_item["id"]] = pos_item["name"]
-
-    for pos_item_id, pos_item_name in sorted(pos_items.items(), key=lambda x: x[1]):
-        print(pos_item_id, pos_item_name)
+# TODO the r365 API is not complete enough to run this script.  need to continue to use the csv file.
+# def get_r365_menu_item_list(business_date, locations):
+#     client = R365Client()
+#     pos_items = {}
+#
+#     for location in locations:
+#         location_id = location["locationid"]
+#         menu_items = get_daily_sales(client, business_date, location_id)
+#
+#         for menu_item in menu_items:
+#             tickets = menu_item.get("salesTickets", [])
+#             for ticket in tickets:
+#                 details = ticket.get("salesDetails", [])
+#                 for detail in details:
+#                     pos_item = detail.get("posItem")
+#                     if pos_item:
+#                         pos_items[pos_item["id"]] = pos_item["name"]
+#
+#     # for pos_item_id, pos_item_name in sorted(pos_items.items(), key=lambda x: x[1]):
+#     #     print(pos_item_id, pos_item_name)
+#     pos_items_df = pd.DataFrame(
+#         [{"pos_item_id": k, "pos_item_name": v} for k, v in pos_items.items()]
+#     )
+#     pos_items_df = pos_items_df[
+#         pos_items_df["pos_item_name"].str.contains("Casual|Steakhouse")
+#     ]
+#     pos_items_df["pos_item_name"] = (
+#         pos_items_df["pos_item_name"]
+#         .str.replace("Casual - ", "")
+#         .str.replace("Steakhouse - ", "")
+#     )
+#     pos_items_df = pos_items_df.rename(columns={"pos_item_name": "Name"})
+#
+#     print(pos_items_df)
+#     return pos_items_df
 
 
 def main():
+    with DatabaseConnection() as db:
+        locations = get_locations(db)
+
+    business_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # locations = get_restaurants(api_access_url, access_token)
+
     # toast_menu_items = get_toast_menu_items()
-    toast_menu_items_api = get_toast_menu_item_list()
+    toast_menu_items_api = get_toast_menu_item_list(locations)
     r365_menu_items = get_r365_menu_items()
+
     new_menu_items, unmapped_menu_items = clean_data(
         toast_menu_items_api, r365_menu_items
     )
@@ -152,7 +198,7 @@ def main():
     # write the new file to a csv file
     new_menu_items.to_csv("./output/new_menu_item_export.csv", index=False)
     # clear screen and print the new file
-    # os.system("cls" if os.name == "nt" else "clear")
+    os.system("cls" if os.name == "nt" else "clear")
     print(new_menu_items.head(30))
 
     # # compare the Name columns in both files and drop rows from unmapped_menu_items that are not in MenuItem_Export

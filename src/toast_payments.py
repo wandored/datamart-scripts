@@ -52,7 +52,6 @@ def get_payment_report(guid, payment_id_list):
 
 
 def main():
-    toast_client = ToastClient()
     # add argument parser for payment, refund and void business dates
     parser = argparse.ArgumentParser(
         description="Generate payment report for given business dates."
@@ -84,14 +83,10 @@ def main():
     master_df = pd.DataFrame()
     for loc in locations:
         guid = loc["toast_guid"]
-        payment_id_list = get_payment_identifiers(
-            guid, business_date
-        )
+        payment_id_list = get_payment_identifiers(guid, business_date)
         print(f"Location: {loc['name']} - Found {len(payment_id_list)} payments")
 
-        payment_df = get_payment_report(
-            guid, payment_id_list
-        )
+        payment_df = get_payment_report(guid, payment_id_list)
         payment_df["location_name"] = loc["name"]
         payment_df = payment_df[payment_df["type"] == "CREDIT"]
         payment_df = payment_df[

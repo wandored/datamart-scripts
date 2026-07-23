@@ -19,35 +19,28 @@ def get_locations(cur) -> pd.DataFrame:
     return locations
 
 
-def get_payment_identifiers(api_access_url, token, guid, business_date):
+def get_payment_identifiers(guid, business_date):
     toast_client = ToastClient()
     # Return a combined list of the GUIDs for each payment type made during one restaurant business day.
     guid_list = []
     for payment_type in ["paid", "refund", "void"]:
         payload = {f"{payment_type}BusinessDate": business_date}
-        url = api_access_url + "/orders/v2/payments"
-        headers = {
-            "Toast-Restaurant-External-ID": guid,
-            "Authorization": f"Bearer {token}",
-        }
-        resp = toast_client.get_response_data(url, headers=headers, params=payload)
+        url = "/orders/v2/payments"
+
+        resp = toast_client.get_response_data(url, guid, params=payload)
         if resp:
             guid_list.extend(resp)
 
     return guid_list
 
 
-def get_payment_report(api_access_url, token, guid, payment_id_list):
+def get_payment_report(guid, payment_id_list):
     toast_client = ToastClient()
     # For each payment GUID, get the detailed report and combine into a single dataframe.
     all_payments_df = pd.DataFrame()
     for i, payment_id in enumerate(payment_id_list):
-        url = api_access_url + f"/orders/v2/payments/{payment_id}"
-        headers = {
-            "Toast-Restaurant-External-ID": guid,
-            "Authorization": f"Bearer {token}",
-        }
-        resp = toast_client.get_response_data(url, headers=headers)
+        url = f"/orders/v2/payments/{payment_id}"
+        resp = toast_client.get_response_data(url, guid)
         payment_df = pd.json_normalize(resp)
         if i == 0:
             all_payments_df = payment_df
@@ -88,22 +81,16 @@ def main():
     with DatabaseConnection() as db:
         locations = get_locations(db.cur)
 
-    api_access_url = toast_client.get_api_access_url()
-    token = toast_client.get_access_token()
-    if not isinstance(token, dict):
-        raise TypeError("Expected token to be a dictionary")
-    access_token = token.get("accessToken", "")
-
     master_df = pd.DataFrame()
     for loc in locations:
         guid = loc["toast_guid"]
         payment_id_list = get_payment_identifiers(
-            api_access_url, access_token, guid, business_date
+            guid, business_date
         )
         print(f"Location: {loc['name']} - Found {len(payment_id_list)} payments")
 
         payment_df = get_payment_report(
-            api_access_url, access_token, guid, payment_id_list
+            guid, payment_id_list
         )
         payment_df["location_name"] = loc["name"]
         payment_df = payment_df[payment_df["type"] == "CREDIT"]

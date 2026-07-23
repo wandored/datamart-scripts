@@ -8,27 +8,49 @@ import pandas as pd
 import requests
 
 from db_utils.config import Config
-from db_utils.toast_utils import get_response_data
+from db_utils.dbconnect import DatabaseConnection
 
 class ToastClient:
     def __init__(self):
+        self.api_access_url = Config.TOAST_API_ACCESS_URL
         self.access_token = self.generate_access_token()
-        self.api_access_url = Config.API_ACCESS_URL
+        with DatabaseConnection() as self.db_connection:
+            self.guid_list = self.fetch_locations(self.db_connection.cur)
 
-    # Helper Functions
+        self.headers = {
+            "Toast-Restaurant-External-ID": None, #Set dynamically for each request
+            "Authorization": f"Bearer {self.get_access_token()}",
+        }
+    # Helper Functions        
     def decode_jwt(self, token):
       """Decode a JWT without verification just to extract the payload"""
       payload = token.split(".")[1]
       padded = payload + "=" * (-len(payload) % 4)  # JWT base64 padding
       decoded_bytes = base64.urlsafe_b64decode(padded)
       return json.loads(decoded_bytes)
+
+    def fetch_locations(self, cur) -> pd.DataFrame:
+        cur.execute(
+            """
+            SELECT id, name, toast_guid
+            FROM restaurants
+            WHERE email IS NOT Null
+            ORDER BY name
+            """
+        )
+        locations = cur.fetchall()
+
+        return pd.DataFrame(locations, columns=["id", "name", "toast_guid"])
     
     # Return Current Access Token
     def get_access_token(self):
-        return self.access_token
+        return self.access_token["accessToken"] if self.access_token else None
     
     def get_api_access_url(self):
         return self.api_access_url
+
+    def get_locations(self):
+        return self.guid_list
 
     # Generate Access Token (Was get_access_token)
     def generate_access_token(self):
@@ -79,7 +101,7 @@ class ToastClient:
             logging.error(f"Error fetching access token: {e}")
             return None
 
-    def get_response_data(self, url, headers, params=None, rate_limit_wait=1.0):
+    def get_response_data(self, url, guid, params=None, rate_limit_wait=1.0):
       """
       Fetch all pages from a paginated Toast API endpoint.
 
@@ -94,13 +116,16 @@ class ToastClient:
       """
       results = []
       page_token = None
+      if(guid is None):
+        raise ValueError("GUID is required for Toast API requests.")
 
       while True:
           request_params = params.copy() if params else {}
           if page_token:
               request_params["pageToken"] = page_token
 
-          response = requests.get(url, headers=headers, params=request_params)
+          self.headers["Toast-Restaurant-External-ID"] = guid
+          response = requests.get(self.api_access_url + url, headers=self.headers, params=request_params)
 
           if not response.ok:
               print(f"Error {response.status_code}: {response.text}")
@@ -165,16 +190,11 @@ class ToastClient:
     def get_restaurants(self, token):
       managementGroupGUID = Config.MANAGEMENT_GROUP_GUID
       url = (
-          self.api_access_url
-          + "/restaurants/v1/groups/"
+          "/restaurants/v1/groups/"
           + managementGroupGUID
           + "/restaurants"
       )
-      headers = {
-          "Toast-Restaurant-External-ID": Config.TOAST_RESTAURANT_EXTERNAL_ID,
-          "Authorization": f"Bearer {token}",
-      }
-      data = self.get_response_data(url, headers)
+      data = self.get_response_data(url, Config.TOAST_RESTAURANT_EXTERNAL_ID)
       guid_list = [item["guid"] for item in data]
       drop_list = Config.LOCATION_DROP_LIST
       guid_list = [item for item in guid_list if item not in drop_list]

@@ -32,18 +32,14 @@ def get_locations(cur) -> pd.DataFrame:
     return locations
 
 
-def get_product_mix(api_access_url, token, guid, business_date):
-    toast_client = ToastClient()
+def get_product_mix(toastClient, guid, business_date):
+    
     item_counts = defaultdict(lambda: {"count": 0, "item_name": "", "price": 0})
 
-    url = api_access_url + "/orders/v2/ordersBulk"
+    url = "/orders/v2/ordersBulk"
     query = {"businessDate": business_date}
-    headers = {
-        "Toast-Restaurant-External-ID": guid,
-        "Authorization": f"Bearer {token}",
-    }
 
-    payload = toast_client.get_response_data(url, headers, params=query)
+    payload = toastClient.get_response_data(url, guid, params=query)
     size_price_items = ["Live Maine Lobster", "Stone Crab"]
     part_a_names = set()  # Track Part A names for later splitting
 
@@ -174,18 +170,13 @@ def main():
         recipe_costs = get_recipe_costs(db.cur)
         calendar = get_calendar(db.cur, calendar_date)
 
-    toast_client = ToastClient()
-    api_access_url = toast_client.get_api_access_url()
-    token = toast_client.get_access_token()
-    if not isinstance(token, dict):
-        raise TypeError("Expected token to be a dictionary")
-    access_token = token.get("accessToken", "")
+    toastClient = ToastClient()
 
     product_mix = pd.DataFrame()
     for loc in locations:
         guid = loc["toast_guid"]
         product_dict, part_a_names = get_product_mix(
-            api_access_url, access_token, guid, business_date
+            toastClient, guid, business_date
         )
         # for item_guid, data in product_mix.items():
         #     print(

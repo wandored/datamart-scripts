@@ -126,8 +126,15 @@ def inventory_count_by_id(client):
 
     inventory_count = get_inventory_count_by_id(client, id)
 
-    inventory_count_df = pd.DataFrame(inventory_count)
-    print(inventory_count_df)
+    count_items = {}
+    for count in inventory_count:
+        count_item = count.get("details")
+        if count_items:
+            count_items[count_item["id"]] = count_item["name"]
+    for count_item_id, count_item_name in sorted(
+        count_items.items(), key=lambda x: x[1]
+    ):
+        print(count_item_id, count_item_name)
 
 
 def print_menu_items(client, locations):
@@ -157,7 +164,7 @@ if __name__ == "__main__":
 
     # print_daily_sales(client, locations)
 
-    # inventory_count_ids(client, locations, beginning_inventory)
-    # inventory_count_by_id(client)
+    inventory_count_ids(client, locations, beginning_inventory)
+    inventory_count_by_id(client)
 
-    print_menu_items(client, locations)
+    # print_menu_items(client, locations)

@@ -11,7 +11,7 @@ and inventory management across locations and time periods.
 import pandas as pd
 from db_utils.config import Config
 from db_utils.dbconnect import DatabaseConnection
-from db_utils.toast_utils import get_access_token, get_response_data
+from db_utils.toast_utils import ToastClient
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 
@@ -32,17 +32,14 @@ def get_locations(cur) -> pd.DataFrame:
     return locations
 
 
-def get_product_mix(api_access_url, token, guid, business_date):
+def get_product_mix(toastClient, guid, business_date):
+    
     item_counts = defaultdict(lambda: {"count": 0, "item_name": "", "price": 0})
 
-    url = api_access_url + "/orders/v2/ordersBulk"
+    url = "/orders/v2/ordersBulk"
     query = {"businessDate": business_date}
-    headers = {
-        "Toast-Restaurant-External-ID": guid,
-        "Authorization": f"Bearer {token}",
-    }
 
-    payload = get_response_data(url, headers, params=query)
+    payload = toastClient.get_response_data(url, guid, params=query)
     size_price_items = ["Live Maine Lobster", "Stone Crab"]
     part_a_names = set()  # Track Part A names for later splitting
 
@@ -173,17 +170,13 @@ def main():
         recipe_costs = get_recipe_costs(db.cur)
         calendar = get_calendar(db.cur, calendar_date)
 
-    api_access_url = Config.TOAST_API_ACCESS_URL
-    token = get_access_token(api_access_url)
-    if not isinstance(token, dict):
-        raise TypeError("Expected token to be a dictionary")
-    access_token = token.get("accessToken", "")
+    toastClient = ToastClient()
 
     product_mix = pd.DataFrame()
     for loc in locations:
         guid = loc["toast_guid"]
         product_dict, part_a_names = get_product_mix(
-            api_access_url, access_token, guid, business_date
+            toastClient, guid, business_date
         )
         # for item_guid, data in product_mix.items():
         #     print(

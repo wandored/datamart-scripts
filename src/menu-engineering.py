@@ -397,7 +397,7 @@ def main(product_mix_csv, menu_analysis_csv, sort_unit):
     print(df_nonetab.head(25))
 
 
-if __name__ == "__main__":
+def get_arguments():
     # creat and argument parser object
     parser = argparse.ArgumentParser()
     # check for user provide argument
@@ -411,12 +411,16 @@ if __name__ == "__main__":
 
     # must have a sort unit
     if args.sales:
-        sort_unit = "Sales"
+        return "Sales"
     elif args.quantity:
-        sort_unit = "Qty"
+        return "Qty"
     else:
         print("No sort unit provided, sort will be by Sales Total")
-        sort_unit = "Sales"
+        return "Sales"
+
+
+if __name__ == "__main__":
+    sort_unit = get_arguments()
 
     product_mix = "./downloads/Product Mix.csv"
     menu_price_analysis = "./downloads/Menu Price Analysis.csv"

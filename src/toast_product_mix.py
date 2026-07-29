@@ -9,10 +9,11 @@ and inventory management across locations and time periods.
 """
 
 import pandas as pd
+import argparse
 from db_utils.config import Config
 from db_utils.dbconnect import DatabaseConnection
 from db_utils.toast_utils import ToastClient
-from collections import defaultdict
+from collections import defaultdict, Counter
 from zoneinfo import ZoneInfo
 
 eastern = ZoneInfo("America/New_York")
@@ -32,16 +33,17 @@ def get_locations(cur) -> pd.DataFrame:
     return locations
 
 
-def get_product_mix(toastClient, guid, business_date):
-    
+def get_product_mix(client, guid, business_date):
     item_counts = defaultdict(lambda: {"count": 0, "item_name": "", "price": 0})
 
     url = "/orders/v2/ordersBulk"
     query = {"businessDate": business_date}
 
-    payload = toastClient.get_response_data(url, guid, params=query)
+    payload = client.get_paged_response_data(url, guid, params=query)
     size_price_items = ["Live Maine Lobster", "Stone Crab"]
     part_a_names = set()  # Track Part A names for later splitting
+
+    raw_items = Counter()
 
     for order in payload:
         checks = order.get("checks", [])
@@ -52,6 +54,7 @@ def get_product_mix(toastClient, guid, business_date):
             for sel in selections:
                 if sel.get("voided", False):
                     continue
+                raw_items[sel["displayName"]] += sel.get("quantity", 0)  # debug counter
                 item = sel.get("item", {})
                 if not item or not item.get("guid"):
                     continue
@@ -107,7 +110,7 @@ def get_product_mix(toastClient, guid, business_date):
                     if item_counts[item_guid]["count"] <= 0:
                         del item_counts[item_guid]
 
-        # sort item_counts by name
+    # sort item_counts by name
     item_counts = dict(sorted(item_counts.items(), key=lambda x: x[1]["item_name"]))
 
     return dict(item_counts), part_a_names
@@ -132,7 +135,7 @@ def get_calendar(cur, current_day) -> dict:
     # get period, week and year for current_day
     cur.execute(
         """
-        SELECT date, period, week, year
+        SELECT date, period, week, year, week_index, period_index
         FROM calendar
         WHERE date = %s
         """,
@@ -149,12 +152,25 @@ def extract_part_b(item_name, part_a_names):
     return item_name
 
 
+def get_arguments():
+    parser = argparse.ArgumentParser(
+        description="Generate fulfillment report for given business dates."
+    )
+    parser.add_argument(
+        "--business_date",
+        type=str,
+        help="Enter business date in YYYYMMDD format",
+    )
+    args = parser.parse_args()
+
+    return args.business_date
+
+
 def main():
     # Enter business date or default to yesterday
-    business_date = input(
-        "Enter business date (YYYYMMDD) or press Enter for yesterday: "
-    )
-    # Calendar_date is in format YYYY-MM-DD for querying calendar table
+    business_date = get_arguments()
+
+    # convert calendar format
     calendar_date = None
     if business_date:
         calendar_date = pd.to_datetime(business_date, format="%Y%m%d").strftime(
@@ -170,14 +186,12 @@ def main():
         recipe_costs = get_recipe_costs(db.cur)
         calendar = get_calendar(db.cur, calendar_date)
 
-    toastClient = ToastClient()
+    client = ToastClient()
 
     product_mix = pd.DataFrame()
     for loc in locations:
         guid = loc["toast_guid"]
-        product_dict, part_a_names = get_product_mix(
-            toastClient, guid, business_date
-        )
+        product_dict, part_a_names = get_product_mix(client, guid, business_date)
         # for item_guid, data in product_mix.items():
         #     print(
         #         f"Name: {data['item_name']}, Count: {data['count']}, Price: {data['price']}"
@@ -220,6 +234,8 @@ def main():
     product_mix["week"] = calendar[2]
     product_mix["period"] = calendar[1]
     product_mix["year"] = calendar[3]
+    product_mix["week_index"] = calendar[4]
+    product_mix["period_index"] = calendar[5]
 
     # write product_mix to csv
     product_mix.to_csv(f"./output/product_mix_{business_date}.csv", index=False)
@@ -232,13 +248,15 @@ def main():
         for _, row in product_mix.iterrows():
             db.cur.execute(
                 """
-                INSERT INTO product_mix (item_guid, date, week, period, year, id, location, item_name, price, count, cost)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO product_mix (item_guid, date, week, period, year, week_index, period_index, id, location, item_name, price, count, cost)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (item_guid, date, id)
                 DO UPDATE SET
                     week = EXCLUDED.week,
                     period = EXCLUDED.period,
                     year = EXCLUDED.year,
+                    week_index = EXCLUDED.week_index,
+                    period_index = EXCLUDED.period_index,
                     location = EXCLUDED.location,
                     item_name = EXCLUDED.item_name,
                     price = EXCLUDED.price,
@@ -251,6 +269,8 @@ def main():
                     row["week"],
                     row["period"],
                     row["year"],
+                    row["week_index"],
+                    row["period_index"],
                     row["id"],
                     row["location"],
                     row["item_name"],

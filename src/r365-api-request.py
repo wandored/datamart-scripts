@@ -3,6 +3,7 @@ from db_utils.r365_importers import (
     get_daily_sales,
     get_inventory_counts,
     get_inventory_count_by_id,
+    get_vendor_invoices,
 )
 from db_utils.dbconnect import DatabaseConnection
 from datetime import datetime, timedelta
@@ -92,13 +93,13 @@ def print_daily_sales(client, locations):
     print(daily_sales_df)
 
 
-def inventory_count_ids(client, locations, beginning_inventory):
+def inventory_count_ids(client, locations, business_date):
     inventory_counts_df = pd.DataFrame()
 
     location_inventory = get_inventory_counts(
         client,
-        business_date_start=beginning_inventory,
-        business_date_end=beginning_inventory,
+        business_date_start=business_date,
+        business_date_end=business_date,
     )
     if location_inventory:
         location_inventory_df = pd.DataFrame(location_inventory)
@@ -148,11 +149,36 @@ def print_menu_items(client, locations):
         print(pos_item_id, pos_item_name)
 
 
+def get_invoices(client, business_date):
+
+    payload = get_vendor_invoices(
+        client,
+        modified_on_start=business_date,
+        modified_on_end=business_date,
+    )
+    if payload:
+        df = pd.DataFrame(payload)
+        df = df[
+            [
+                "id",
+                "name",
+                "number",
+                "amount",
+                "status",
+                "date",
+                "isPaid",
+            ]
+        ]
+
+    print(df)
+    df.to_csv("./output/invoices.csv", index=False)
+
+
 if __name__ == "__main__":
     with DatabaseConnection() as db:
         locations = get_locations(db)
-        beginning_inventory = get_calendar(db)
-        print(f"beginning_inventory date: {beginning_inventory}")
+        business_date = get_calendar(db)
+        print(f"Business date: {business_date}")
     client = R365Client()
 
     # print_daily_sales(client, locations)
@@ -160,4 +186,6 @@ if __name__ == "__main__":
     # inventory_count_ids(client, locations, beginning_inventory)
     # inventory_count_by_id(client)
 
-    print_menu_items(client, locations)
+    # print_menu_items(client, locations)
+
+    get_invoices(client, business_date)

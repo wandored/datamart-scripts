@@ -1,4 +1,4 @@
-# read UnitOfMeasure.csv file and upload to database
+# import unitsofmeasure from toast and upload to database
 import pandas as pd
 from db_utils.dbconnect import DatabaseConnection
 from db_utils.r365_utils import R365Client

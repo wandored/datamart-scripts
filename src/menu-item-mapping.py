@@ -9,18 +9,23 @@ import os
 
 import pandas as pd
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from db_utils.dbconnect import DatabaseConnection
-from db_utils.config import Config
 from db_utils.toast_utils import ToastClient
 from db_utils.r365_utils import R365Client
 from db_utils.r365_importers import get_daily_sales
 
 
+# def format_r365_datetime(date_obj, tz_name, t=time.min):
+#     dt = datetime.combine(date_obj, t, tzinfo=ZoneInfo(tz_name))
+#     return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + dt.strftime("%z")
+
+
 def get_locations(db):
     db.cur.execute(
         """
-        SELECT locationid, name
+        SELECT locationid, name, timezone
         FROM restaurants
         WHERE email IS NOT Null
         ORDER BY name
@@ -29,6 +34,17 @@ def get_locations(db):
     locations = db.cur.fetchall()
 
     return locations
+
+
+def get_start_date(year, period, week):
+    with DatabaseConnection() as db:
+        query = """
+            SELECT date FROM calendar
+            WHERE year = %s AND period = %s AND week = %s
+        """
+        db.cur.execute(query, (year, period, week))
+        result = db.cur.fetchone()
+    return result[0]
 
 
 def clean_data(toast_export, r365_export):

@@ -12,35 +12,72 @@ from psycopg2.errors import IntegrityError, UniqueViolation
 from db_utils.dbconnect import DatabaseConnection
 
 
-def get_date(product_mix_csv):
-    with open(product_mix_csv, "r") as f:
-        next(f)
-        second_line = next(f)
-        date_string = second_line.split(" - ")[1].strip()
-        date = datetime.strptime(date_string, "%m/%d/%Y").date()
-    return date
+def get_date(year, period, week, db):
+    query = """
+        SELECT date FROM calendar
+        WHERE year = %s AND period = %s AND week = %s
+    """
+    db.cur.execute(query, (year, period, week))
+    result = db.cur.fetchone()
+    if result:
+        return result[0]
+    else:
+        raise ValueError(f"No date found for year={year}, period={period}, week={week}")
 
 
-def get_period(date, cur):
-    cur.execute("SELECT period, year FROM calendar WHERE date = %s", (date,))
-    result = cur.fetchone()
-    period, year = result[0], result[1]
-    return period, year
+def get_arguments():
+    parser = argparse.ArgumentParser(
+        description="Generate fulfillment report for given business dates."
+    )
+    parser.add_argument(
+        "-y",
+        "--year",
+        type=str,
+        help="Enter Year in YYYY format",
+    )
+    parser.add_argument(
+        "-p",
+        "--period",
+        type=str,
+        help="Enter period in PP format",
+    )
+    parser.add_argument(
+        "-w",
+        "--week",
+        type=str,
+        help="Enter week in WW format",
+    )
+    args = parser.parse_args()
+
+    return args.year, args.period, args.week
 
 
-def calculate_bread_basket(df, cur):
+def get_start_date(year, period, week):
+    with DatabaseConnection() as db:
+        query = """
+            SELECT date FROM calendar
+            WHERE year = %s AND period = %s AND week = %s
+        """
+        db.cur.execute(query, (year, period, week))
+        result = db.cur.fetchone()
+    return result[0]
+
+
+def calculate_bread_basket(df, db):
     stores_w_bread = (4, 9, 11, 15, 16, 17)
     df_bread = df[(df["store_id"].isin(stores_w_bread)) & (df["category2"] == "Entree")]
     for store in stores_w_bread:
-        cur.execute("SELECT name FROM restaurants WHERE id = %s", (store,))
-        store_name = cur.fetchone()[0]
+        db.cur.execute("SELECT name FROM restaurants WHERE id = %s", (store,))
+        store_name = db.cur.fetchone()[0]
         bread_str = r"Bread.*Basket"
         try:
-            cur.execute(
+            db.cur.execute(
                 "SELECT location, recipe_cost FROM recipe_cost WHERE id = %s AND menu_item ~* %s",
                 (store, bread_str),
             )
-            matching_rows = pd.DataFrame(cur.fetchall(), columns=["location", "cost"])
+            matching_rows = pd.DataFrame(
+                db.cur.fetchall(), columns=["location", "cost"]
+            )
             if not matching_rows.empty:
                 bb_cost = matching_rows["cost"].iloc[0]
             elif store == 4:
@@ -78,16 +115,16 @@ def calculate_bread_basket(df, cur):
     return df
 
 
-def update_location_names(df, cur):
+def update_location_names(df, db):
     # import locationid and name from location table
-    cur.execute("SELECT locationid, name FROM location")
-    location = cur.fetchall()
+    db.cur.execute("SELECT locationid, name FROM location")
+    location = db.cur.fetchall()
     location = pd.DataFrame(location, columns=["locationid", "name"])
     location.rename(columns={"name": "location"}, inplace=True)
     df = pd.merge(df, location, on="location", how="left", sort=False)
 
-    cur.execute("SELECT locationid, name, id FROM restaurants")
-    restaurants = cur.fetchall()
+    db.cur.execute("SELECT locationid, name, id FROM restaurants")
+    restaurants = db.cur.fetchall()
     restaurants = pd.DataFrame(restaurants, columns=["locationid", "name", "id"])
     restaurants.dropna(inplace=True)
     restaurants.rename(columns={"name": "location", "id": "store_id"}, inplace=True)
@@ -136,7 +173,7 @@ def merge_dataframes(df1, df2):
     return df
 
 
-def main(product_mix_csv, menu_analysis_csv, date, year, period, engine, conn, cur):
+def main(product_mix_csv, menu_analysis_csv, date, year, period, db):
     product_mix = pd.read_csv(
         product_mix_csv,
         skiprows=3,
@@ -191,8 +228,8 @@ def main(product_mix_csv, menu_analysis_csv, date, year, period, engine, conn, c
     )
     menu_analysis["menu_cost"] = menu_analysis["menu_cost"].fillna(0)
     df_merge = merge_dataframes(product_mix, menu_analysis)
-    menu_engineering = update_location_names(df_merge, cur)
-    menu_engineering = calculate_bread_basket(menu_engineering, cur)
+    menu_engineering = update_location_names(df_merge, db)
+    menu_engineering = calculate_bread_basket(menu_engineering, db)
 
     menu_engineering["date"] = date
     menu_engineering["period"] = period
@@ -278,7 +315,7 @@ def main(product_mix_csv, menu_analysis_csv, date, year, period, engine, conn, c
             table=sql.Identifier(table_name),
             temp_table=sql.Identifier(temp_table_name),
         )
-        cur.execute(update_query)
+        db.cur.execute(update_query)
         conn.commit()
     except (IntegrityError, UniqueViolation) as e:
         print(e)
@@ -288,7 +325,7 @@ def main(product_mix_csv, menu_analysis_csv, date, year, period, engine, conn, c
         return 1
     finally:
         try:
-            cur.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
+            db.cur.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
             conn.commit()
         except Exception as e:
             print(e)
@@ -297,28 +334,13 @@ def main(product_mix_csv, menu_analysis_csv, date, year, period, engine, conn, c
 
 
 if __name__ == "__main__":
-    # user input year, period and week
-    # year: int = input("Enter year: ")
-    # period: int = input("Enter period: ")
-    # year = 2024
-    # # period = 8
-    # week = 4
+    year, period, week = get_arguments()
+    print(f"Year: {year}, Period: {period}, Week: {week}")
 
-    # print(f"Year: {year}, Period: {period}")
-
-    product_mix = "./downloads/Product Mix.csv"
     menu_price_analysis = "./downloads/Menu Price Analysis.csv"
     date = get_date(product_mix)
     with DatabaseConnection() as db:
-        period, year = get_period(date, db.cur)
+        product_mix = get_product_mix(db)
+        period, year = get_period(date, db)
         print(f"Date: {date}, Period: {period}, Year: {year}")
-        main(
-            product_mix,
-            menu_price_analysis,
-            date,
-            year,
-            period,
-            db.engine,
-            db.conn,
-            db.cur,
-        )
+        main(product_mix, menu_price_analysis, date, year, period, db)

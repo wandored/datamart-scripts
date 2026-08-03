@@ -8,12 +8,17 @@ The table is designed for power bi to analyze product mix trends, profitability,
 and inventory management across locations and time periods.
 """
 
+import re
 import pandas as pd
 import argparse
+import pprint
+
+from pandas._libs.tslibs.timedeltas import disallow_ambiguous_unit
 from db_utils.config import Config
 from db_utils.dbconnect import DatabaseConnection
 from db_utils.toast_utils import ToastClient
 from collections import defaultdict, Counter
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 eastern = ZoneInfo("America/New_York")
@@ -22,7 +27,7 @@ eastern = ZoneInfo("America/New_York")
 def get_locations(cur) -> pd.DataFrame:
     cur.execute(
         """
-        SELECT id, name, toast_guid
+        SELECT id, name, toast_guid, timezone
         FROM restaurants
         WHERE email IS NOT Null
         ORDER BY name
@@ -33,116 +38,173 @@ def get_locations(cur) -> pd.DataFrame:
     return locations
 
 
-def get_product_mix(client, guid, business_date):
-    item_counts = defaultdict(lambda: {"count": 0, "item_name": "", "price": 0})
+def format_r365_datetime(date_obj, tz_name, hour=4):
+    dt = datetime.combine(date_obj, time(hour=hour), tzinfo=ZoneInfo(tz_name))
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + dt.strftime("%z")
+
+
+def get_product_mix(client, guid, business_date=None, start_date=None, end_date=None):
+    if business_date:
+        business_date = pd.to_datetime(business_date).strftime("%Y%m%d")
 
     url = "/orders/v2/ordersBulk"
-    query = {"businessDate": business_date}
+    query = {
+        "businessDate": business_date,
+        "startDate": start_date,
+        "endDate": end_date,
+    }
 
     payload = client.get_paged_response_data(url, guid, params=query)
-    size_price_items = ["Live Maine Lobster", "Stone Crab"]
-    part_a_names = set()  # Track Part A names for later splitting
 
-    raw_items = Counter()
+    rows = []
+    part_a_names = set()
+
+    def add_row(
+        item_guid,
+        order_date,
+        item_name,
+        qty,
+        menu,
+        gross,
+        net=0,
+        discount=0,
+    ):
+        rows.append(
+            {
+                "item_guid": item_guid,
+                "date": order_date,
+                "item_name": item_name,
+                "qty_sold": qty,
+                "menu_item_price": menu,
+                "gross_item_amt": gross,
+                "net_item_amt": net,
+                "discount_amt": discount,
+            }
+        )
+
+    # Recursive function to process modifiers
+    def process_modifiers(modifiers, order_date):
+        for mod in modifiers or []:
+            mod_item = mod.get("item")
+            if not mod_item:
+                continue
+
+            add_row(
+                item_guid=mod_item["guid"],
+                order_date=order_date,
+                item_name=mod.get("displayName", "Unknown Modifier"),
+                qty=mod.get("quantity", 0) or 0,
+                menu=mod.get("receiptLinePrice", 0) or 0,
+                gross=mod.get("preDiscountPrice", 0) or 0,
+                net=mod.get("price", 0) or 0,
+                discount=sum(
+                    d.get("discountAmount", 0) or 0
+                    for d in mod.get("appliedDiscounts", [])
+                ),
+            )
+
+            process_modifiers(mod.get("modifiers", []), order_date)
 
     for order in payload:
-        checks = order.get("checks", [])
+        order_date = order["businessDate"]
 
-        for check in checks:
-            selections = check.get("selections", [])
+        for check in order.get("checks", []):
+            for sel in check.get("selections", []):
+                if sel.get("voided"):
+                    continue
 
-            for sel in selections:
-                if sel.get("voided", False):
+                item = sel.get("item")
+                if not item:
                     continue
-                raw_items[sel["displayName"]] += sel.get("quantity", 0)  # debug counter
-                item = sel.get("item", {})
-                if not item or not item.get("guid"):
+
+                item_guid = item.get("guid")
+                if not item_guid:
                     continue
-                item_guid = item["guid"]
+
                 item_name = sel.get("displayName", "Unknown Item")
-                price = sel.get("price", 0) or 0
-                quantity = sel.get("quantity", 0) or 0
+                qty = sel.get("quantity", 0) or 0
+                menu = sel.get("receiptLinePrice", 0) or 0
+                gross = sel.get("preDiscountPrice", 0) or 0
+                net = sel.get("price", 0) or 0
+                discount = sum(
+                    d.get("discountAmount", 0) or 0
+                    for d in sel.get("appliedDiscounts", [])
+                )
 
-                item_counts[item_guid]["count"] += quantity
-                if not item_counts[item_guid]["item_name"]:
-                    item_counts[item_guid]["item_name"] = item_name
-                    item_counts[item_guid]["price"] = price
+                # Check if any modifiers have "optionGroupPricingMode" set to "REPLACES_PRICE"
+                # This indicates that the item has size/price modifiers that replace the base price.
+                has_size_price = any(
+                    mod.get("optionGroupPricingMode") == "REPLACES_PRICE"
+                    for mod in sel.get("modifiers", [])
+                )
 
-                # Check for menuitems that match the pattern
-                if item_name.startswith("Private Dining") or item_name.endswith(
-                    "Dinner"
-                ):
-                    for mod in sel.get("modifiers", []):
-                        mod_item = mod.get("item", {})
-                        mod_guid = mod_item.get("guid")
-                        mod_name = mod.get("displayName", "Unknown Modifier")
-                        mod_price = mod.get("price", 0) or 0
-                        mod_qty = mod.get("quantity", 0) or 0
-                        if mod_guid:
-                            item_counts[mod_guid]["count"] += mod_qty
-                            if not item_counts[mod_guid]["item_name"]:
-                                item_counts[mod_guid]["item_name"] = mod_name
-                                item_counts[mod_guid]["price"] = mod_price
-                # Check for size/price items
-
-                elif item_name in size_price_items or item_name.endswith("Catering"):
+                if has_size_price:
                     part_a_names.add(item_name)
+
                     for mod in sel.get("modifiers", []):
-                        # Only process modifiers that have a price (indicating they are size/price modifiers)
                         if mod.get("price", 0) == 0:
                             continue
-                        mod_item = mod.get("item", {})
-                        mod_guid = mod_item.get("guid")
-                        mod_size_name = mod.get("displayName", "Unknown Modifier")
-                        mod_price = mod.get("price", 0) or 0
+
+                        mod_item = mod.get("item")
+                        if not mod_item:
+                            continue
+
                         mod_qty = mod.get("quantity", 0) or 0
-                        if mod_guid:
-                            item_counts[mod_guid]["count"] += mod_qty
-                            if not item_counts[mod_guid]["item_name"]:
-                                # Combine initial item_name and mod_second_name
-                                combined_name = f"{item_name} {mod_size_name}"
-                                item_counts[mod_guid]["item_name"] = combined_name
-                                # Only use the price from the mod_second_name, divided by quantity for per-item price
-                                per_item_price = mod_price / mod_qty
-                                item_counts[mod_guid]["price"] = per_item_price
-                    # drop the base item and only keep the size/price modifier
-                    item_counts[item_guid]["count"] -= quantity
-                    if item_counts[item_guid]["count"] <= 0:
-                        del item_counts[item_guid]
+                        if mod_qty == 0:
+                            continue
 
-    # sort item_counts by name
-    item_counts = dict(sorted(item_counts.items(), key=lambda x: x[1]["item_name"]))
+                        mod_gross = mod.get("preDiscountPrice", 0) or 0
+                        mod_net = mod.get("price", 0) or 0
+                        discount = sum(
+                            d.get("discountAmount", 0) or 0
+                            for d in sel.get("appliedDiscounts", [])
+                        )
 
-    return dict(item_counts), part_a_names
+                        add_row(
+                            item_guid=mod_item["guid"],
+                            order_date=order_date,
+                            item_name=f"{item_name} {mod.get('displayName')}",
+                            qty=mod_qty,
+                            menu=mod_gross / mod_qty if mod_qty else 0,
+                            gross=mod_gross,
+                            net=mod_net,
+                            discount=discount,
+                        )
 
+                else:
+                    add_row(
+                        item_guid=item_guid,
+                        order_date=order_date,
+                        item_name=item_name,
+                        qty=qty,
+                        menu=menu,
+                        gross=gross,
+                        net=net,
+                        discount=discount,
+                    )
 
-def get_recipe_costs(cur) -> pd.DataFrame:
-    cur.execute(
-        """
-        SELECT id, location, concept, menu_item, recipe_cost
-        FROM recipe_cost
-        """
-    )
-    costs = cur.fetchall()
-    costs = pd.DataFrame(
-        costs, columns=["id", "location", "concept", "menu_item", "recipe_cost"]
-    )
+                    process_modifiers(sel.get("modifiers", []), order_date)
 
-    return costs
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = (
+            df.groupby(
+                ["item_guid", "date", "item_name"],
+                as_index=False,
+            )
+            .agg(
+                {
+                    "qty_sold": "sum",
+                    "menu_item_price": "mean",
+                    "gross_item_amt": "sum",
+                    "net_item_amt": "sum",
+                    "discount_amt": "sum",
+                }
+            )
+            .sort_values("item_name")
+        )
 
-
-def get_calendar(cur, current_day) -> dict:
-    # get period, week and year for current_day
-    cur.execute(
-        """
-        SELECT date, period, week, year, week_index, period_index
-        FROM calendar
-        WHERE date = %s
-        """,
-        (current_day,),
-    )
-    calendar = cur.fetchone()
-    return calendar
+    return df, part_a_names
 
 
 def extract_part_b(item_name, part_a_names):
@@ -157,6 +219,7 @@ def get_arguments():
         description="Generate fulfillment report for given business dates."
     )
     parser.add_argument(
+        "-b",
         "--business_date",
         type=str,
         help="Enter business date in YYYYMMDD format",
@@ -166,46 +229,109 @@ def get_arguments():
     return args.business_date
 
 
-def main():
-    # Enter business date or default to yesterday
-    business_date = get_arguments()
+def removeSpecial(df):
+    """Removes specialty items from the dataframe"""
+    try:
+        with open("./specialty.txt") as file:
+            specialty_patterns = [line.strip() for line in file if line.strip()]
+    except FileNotFoundError:
+        specialty_patterns = []
 
-    # convert calendar format
-    calendar_date = None
-    if business_date:
-        calendar_date = pd.to_datetime(business_date, format="%Y%m%d").strftime(
-            "%Y-%m-%d"
-        )
-    if not business_date:
-        adjusted_date = pd.Timestamp.now(tz=eastern).normalize() - pd.Timedelta(days=1)
-        business_date = adjusted_date.strftime("%Y%m%d")
-        calendar_date = adjusted_date.strftime("%Y-%m-%d")
+    # Remove exact matches
+    if specialty_patterns:
+        df = df[~df.item_name.isin(specialty_patterns)]
+
+    # Combine all regex patterns into one
+    regex_patterns = [
+        r"^No ",
+        r" Only$",
+        r" Tax$",
+        r"^& ",
+        r"^Seat ",
+        r"Allergy$",
+        r"Outstanding$",
+        r"for Salad.*",
+        r".*for Steak.*",
+        r".*for Sand.*",
+        r".*for Taco.*",
+        r".*for Cali-Club.*",
+        r".*for Edge.*",
+        r".*See Server.*",
+        r".*Refund.*",
+        r".*2 Pens.*",
+    ]
+    combined_pattern = "|".join(f"(?:{pat})" for pat in regex_patterns)
+    df = df[~df.item_name.str.contains(combined_pattern, na=False, regex=True)]
+
+    return df
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Build product mix table for given dates"
+    )
+    parser.add_argument(
+        "-b",
+        "--business_date",
+        type=str,
+        help="Enter business date in YYYY-MM-DD format",
+    )
+    parser.add_argument(
+        "-s",
+        "--start_date",
+        type=str,
+        help="Enter business date in YYYY-MM-DD format",
+    )
+    parser.add_argument(
+        "-e",
+        "--end_date",
+        type=str,
+        help="Enter business date in YYYY-MM-DD format",
+    )
+    args = parser.parse_args()
+
+    if args.business_date:
+        business_date = datetime.strptime(args.business_date, "%Y-%m-%d").date()
+        start_date = None
+        end_date = None
+    elif args.start_date and args.end_date:
+        business_date = None
+        start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date()
+        end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date()
+        end_date += pd.Timedelta(days=1)  # Include the end date in the range
 
     with DatabaseConnection() as db:
         locations = get_locations(db.cur)
-        recipe_costs = get_recipe_costs(db.cur)
-        calendar = get_calendar(db.cur, calendar_date)
 
     client = ToastClient()
 
     product_mix = pd.DataFrame()
     for loc in locations:
+        if business_date is None:
+            tz = loc["timezone"]
+            request_start = format_r365_datetime(start_date, tz)
+            request_end = format_r365_datetime(end_date, tz)
+        else:
+            request_start = None
+            request_end = None
+
         guid = loc["toast_guid"]
-        product_dict, part_a_names = get_product_mix(client, guid, business_date)
-        # for item_guid, data in product_mix.items():
-        #     print(
-        #         f"Name: {data['item_name']}, Count: {data['count']}, Price: {data['price']}"
-        #     )
-        # append location name to each item in product_mix and add to a pandas DataFrame
-        df = pd.DataFrame.from_dict(product_dict, orient="index")
+        df, part_a_names = get_product_mix(
+            client,
+            guid,
+            business_date,
+            request_start,
+            request_end,
+        )
+
         df["location"] = loc["name"]
         df["store_id"] = loc["id"]
-        df.reset_index(inplace=True)
-        df.rename(columns={"index": "item_guid"}, inplace=True)
-        # merge duplicate rows by summing count. All columns must be the same except for count to be merged
-        df = df.groupby(
-            ["item_guid", "item_name", "price", "store_id"], as_index=False
-        ).agg({"count": "sum"})
+
+        df["date"] = pd.to_datetime(
+            df["date"].astype(str),
+            format="%Y%m%d",
+        ).dt.strftime("%Y-%m-%d")
+
         product_mix = pd.concat([product_mix, df], ignore_index=True)
 
     # Save original item_name
@@ -214,69 +340,42 @@ def main():
     product_mix["merge_item_name"] = product_mix["item_name"].apply(
         lambda x: extract_part_b(x, part_a_names)
     )
-    # merge product_mix with recipe_costs on location and menu_item = item_name to get recipe_cost
-    product_mix = product_mix.merge(
-        recipe_costs,
-        left_on=["store_id", "merge_item_name"],
-        right_on=["id", "menu_item"],
-        how="left",
-    )
 
     # Restore original item_name
     product_mix["item_name"] = product_mix["original_item_name"]
     product_mix.drop(columns=["original_item_name", "merge_item_name"], inplace=True)
 
-    # drop menu_item column and rename recipe_cost to cost
-    product_mix.drop(columns=["menu_item"], inplace=True)
-    product_mix.rename(columns={"recipe_cost": "cost"}, inplace=True)
-    # merge product_mix with calendar on date to get period, week and year
-    product_mix["date"] = calendar[0]
-    product_mix["week"] = calendar[2]
-    product_mix["period"] = calendar[1]
-    product_mix["year"] = calendar[3]
-    product_mix["week_index"] = calendar[4]
-    product_mix["period_index"] = calendar[5]
-
+    product_mix = removeSpecial(product_mix)
     # write product_mix to csv
     product_mix.to_csv(f"./output/product_mix_{business_date}.csv", index=False)
+    # product_mix = product_mix[~product_mix["cost"].isnull()]
 
-    # drop rows with null cost
-    product_mix = product_mix[~product_mix["cost"].isnull()]
-
-    # write product_mix to database table product_mix with columns date, location, item_name, count, price, cost, week, period and year
     with DatabaseConnection() as db:
         for _, row in product_mix.iterrows():
             db.cur.execute(
                 """
-                INSERT INTO product_mix (item_guid, date, week, period, year, week_index, period_index, id, location, item_name, price, count, cost)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (item_guid, date, id)
+                INSERT INTO toast_product_mix (item_guid, date, store_id, item_name, qty_sold, menu_item_price, gross_item_amt, net_item_amt, discount_amt)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (item_guid, date, store_id)
                 DO UPDATE SET
-                    week = EXCLUDED.week,
-                    period = EXCLUDED.period,
-                    year = EXCLUDED.year,
-                    week_index = EXCLUDED.week_index,
-                    period_index = EXCLUDED.period_index,
-                    location = EXCLUDED.location,
                     item_name = EXCLUDED.item_name,
-                    price = EXCLUDED.price,
-                    count = EXCLUDED.count,
-                    cost = EXCLUDED.cost
+                    qty_sold = EXCLUDED.qty_sold,
+                    menu_item_price = EXCLUDED.menu_item_price,
+                    gross_item_amt = EXCLUDED.gross_item_amt,
+                    net_item_amt = EXCLUDED.net_item_amt,
+                    discount_amt = EXCLUDED.discount_amt,
+                    last_update = NOW()
                 """,
                 (
                     row["item_guid"],
                     row["date"],
-                    row["week"],
-                    row["period"],
-                    row["year"],
-                    row["week_index"],
-                    row["period_index"],
-                    row["id"],
-                    row["location"],
+                    row["store_id"],
                     row["item_name"],
-                    row["price"],
-                    row["count"],
-                    row["cost"],
+                    row["qty_sold"],
+                    row["menu_item_price"],
+                    row["gross_item_amt"],
+                    row["net_item_amt"],
+                    row["discount_amt"],
                 ),
             )
         db.conn.commit()

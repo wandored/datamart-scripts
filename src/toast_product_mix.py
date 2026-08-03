@@ -291,7 +291,7 @@ def main():
     args = parser.parse_args()
 
     if args.business_date:
-        business_date = args.business_date
+        business_date = datetime.strptime(args.business_date, "%Y-%m-%d").date()
         start_date = None
         end_date = None
     elif args.start_date and args.end_date:
@@ -311,6 +311,9 @@ def main():
             tz = loc["timezone"]
             request_start = format_r365_datetime(start_date, tz)
             request_end = format_r365_datetime(end_date, tz)
+        else:
+            request_start = None
+            request_end = None
 
         guid = loc["toast_guid"]
         df, part_a_names = get_product_mix(

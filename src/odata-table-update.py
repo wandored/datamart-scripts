@@ -21,6 +21,7 @@ def update_glaccount(db, client):
         [
             {
                 "glaccountid": row["id"],
+                "name": row["name"],
                 "glaccountnumber": row["number"],
                 "gltype": row["glType"],
             }
@@ -54,7 +55,16 @@ def update_glaccount(db, client):
 def update_jobtitle(db, client):
     start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     end_date = (datetime.now()).strftime("%Y-%m-%d")
+
     payload = get_jobs(client, start_date, end_date)
+    if payload is None:
+        logging.error("Failed to retrieve jobTitle")
+        return
+
+    if not payload:
+        logging.info("No changes found for jobTitle")
+        return
+
     df = pd.DataFrame(
         [
             {
@@ -78,11 +88,11 @@ def update_jobtitle(db, client):
             for row in pos_payload
         ]
     )
-    df = pd.merge(df, pos_df, how="inner", on="jobtitleid")
 
     if df.empty:
         logging.warning("No data returned for JobTitle")
         return 1
+    df = pd.merge(df, pos_df, how="inner", on="jobtitleid")
     df = df.astype(str).replace("nan", None)
     df = df.drop_duplicates(subset=["jobtitleid"], keep="last")
 
@@ -158,7 +168,16 @@ def update_location(db, client):
 def update_company(db, client):
     start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     end_date = (datetime.now()).strftime("%Y-%m-%d")
+
     payload = get_vendors(client, start_date, end_date)
+    if payload is None:
+        logging.error("Failed to retrieve Company")
+        return
+
+    if not payload:
+        logging.info("No changes found for Company")
+        return
+
     df = pd.DataFrame(
         [
             {
@@ -237,7 +256,16 @@ def update_item(db, client):
 
 def update_sales_accounts(db, client):
     start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
     payload = get_pos_mapping(client, "posMappingSalesAccount", start_date)
+    if payload is None:
+        logging.error("Failed to retrieve posMappingSalesAccount")
+        return
+
+    if not payload:
+        logging.info("No changes found for posMappingSalesAccount")
+        return
+
     df = pd.DataFrame(
         [
             {
@@ -251,6 +279,7 @@ def update_sales_accounts(db, client):
             for row in payload
         ]
     )
+
     # Split ServiceType into service_type and day_part
     df[["service_type", "day_part"]] = df["serviceType"].str.rsplit(
         " - ", n=1, expand=True

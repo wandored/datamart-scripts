@@ -177,7 +177,7 @@ def main():
 
     new_menu_items = clean_data(toast_menu_items_api, r365_menu_items_api)
 
-    # # write the new file to a csv file
+    # write the new file to a csv file
     # new_menu_items.to_csv("./output/new_menu_item_export.csv", index=False)
 
     # clear screen and print the new file

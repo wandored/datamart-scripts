@@ -24,16 +24,55 @@ from zoneinfo import ZoneInfo
 eastern = ZoneInfo("America/New_York")
 
 
-def get_locations(cur) -> pd.DataFrame:
-    cur.execute(
-        """
-        SELECT id, name, toast_guid, timezone
-        FROM restaurants
-        WHERE email IS NOT Null
-        ORDER BY name
-        """
+def get_arguments():
+    parser = argparse.ArgumentParser(
+        description="Build product mix table for given dates"
     )
-    locations = cur.fetchall()
+    parser.add_argument(
+        "-b",
+        "--business_date",
+        type=str,
+        help="Enter business date in YYYY-MM-DD format",
+    )
+    parser.add_argument(
+        "-s",
+        "--start_date",
+        type=str,
+        help="Enter business date in YYYY-MM-DD format",
+    )
+    parser.add_argument(
+        "-e",
+        "--end_date",
+        type=str,
+        help="Enter business date in YYYY-MM-DD format",
+    )
+    args = parser.parse_args()
+
+    if args.business_date:
+        business_date = datetime.strptime(args.business_date, "%Y-%m-%d").date()
+        start_date = None
+        end_date = None
+        return business_date, start_date, end_date
+    elif args.start_date and args.end_date:
+        business_date = None
+        start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date()
+        end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date()
+        end_date += pd.Timedelta(days=1)  # Include the end date in the range
+        return business_date, start_date, end_date
+
+
+def get_locations() -> pd.DataFrame:
+    locations = pd.DataFrame()
+    with DatabaseConnection() as db:
+        db.cur.execute(
+            """
+            SELECT id, name, concept, toast_guid, timezone
+            FROM restaurants
+            WHERE email IS NOT Null
+            ORDER BY name
+            """
+        )
+        locations = db.cur.fetchall()
 
     return locations
 
@@ -159,7 +198,6 @@ def get_product_mix(client, guid, business_date=None, start_date=None, end_date=
                             d.get("discountAmount", 0) or 0
                             for d in sel.get("appliedDiscounts", [])
                         )
-
                         add_row(
                             item_guid=mod_item["guid"],
                             order_date=order_date,
@@ -170,7 +208,6 @@ def get_product_mix(client, guid, business_date=None, start_date=None, end_date=
                             net=mod_net,
                             discount=discount,
                         )
-
                 else:
                     add_row(
                         item_guid=item_guid,
@@ -214,21 +251,6 @@ def extract_part_b(item_name, part_a_names):
     return item_name
 
 
-def get_arguments():
-    parser = argparse.ArgumentParser(
-        description="Generate fulfillment report for given business dates."
-    )
-    parser.add_argument(
-        "-b",
-        "--business_date",
-        type=str,
-        help="Enter business date in YYYYMMDD format",
-    )
-    args = parser.parse_args()
-
-    return args.business_date
-
-
 def removeSpecial(df):
     """Removes specialty items from the dataframe"""
     try:
@@ -256,6 +278,7 @@ def removeSpecial(df):
         r".*for Taco.*",
         r".*for Cali-Club.*",
         r".*for Edge.*",
+        r".*for Poke.*",
         r".*See Server.*",
         r".*Refund.*",
         r".*2 Pens.*",
@@ -266,42 +289,41 @@ def removeSpecial(df):
     return df
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Build product mix table for given dates"
-    )
-    parser.add_argument(
-        "-b",
-        "--business_date",
-        type=str,
-        help="Enter business date in YYYY-MM-DD format",
-    )
-    parser.add_argument(
-        "-s",
-        "--start_date",
-        type=str,
-        help="Enter business date in YYYY-MM-DD format",
-    )
-    parser.add_argument(
-        "-e",
-        "--end_date",
-        type=str,
-        help="Enter business date in YYYY-MM-DD format",
-    )
-    args = parser.parse_args()
-
-    if args.business_date:
-        business_date = datetime.strptime(args.business_date, "%Y-%m-%d").date()
-        start_date = None
-        end_date = None
-    elif args.start_date and args.end_date:
-        business_date = None
-        start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date()
-        end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date()
-        end_date += pd.Timedelta(days=1)  # Include the end date in the range
-
+def add_menu_item_id(df) -> pd.DataFrame:
     with DatabaseConnection() as db:
-        locations = get_locations(db.cur)
+        query = """
+        SELECT
+            menu_item_id,
+            menu_item,
+            concept
+        FROM menu_items
+        """
+        db.cur.execute(query)
+        result = db.cur.fetchall()
+        menu_items = pd.DataFrame(
+            result, columns=["menu_item_id", "item_name", "concept"]
+        )
+
+    for frame in (df, menu_items):
+        frame["item_name"] = (
+            frame["item_name"].str.strip().str.replace("\xa0", " ", regex=False)
+        )
+        frame["concept"] = frame["concept"].str.strip()
+
+    df = pd.merge(
+        df,
+        menu_items,
+        on=["item_name", "concept"],
+        how="left",
+    )
+
+    return df
+
+
+def main():
+    business_date, start_date, end_date = get_arguments()
+
+    locations = get_locations()
 
     client = ToastClient()
 
@@ -326,6 +348,7 @@ def main():
 
         df["location"] = loc["name"]
         df["store_id"] = loc["id"]
+        df["concept"] = loc["concept"]
 
         df["date"] = pd.to_datetime(
             df["date"].astype(str),
@@ -347,15 +370,19 @@ def main():
 
     product_mix = removeSpecial(product_mix)
     # write product_mix to csv
+
+    product_mix = add_menu_item_id(product_mix)
+
     product_mix.to_csv(f"./output/product_mix_{business_date}.csv", index=False)
     # product_mix = product_mix[~product_mix["cost"].isnull()]
 
+    # print(product_mix.head(30))
     with DatabaseConnection() as db:
         for _, row in product_mix.iterrows():
             db.cur.execute(
                 """
-                INSERT INTO toast_product_mix (item_guid, date, store_id, item_name, qty_sold, menu_item_price, gross_item_amt, net_item_amt, discount_amt)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO toast_product_mix (item_guid, date, store_id, item_name, qty_sold, menu_item_price, gross_item_amt, net_item_amt, discount_amt, location, concept, menu_item_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (item_guid, date, store_id)
                 DO UPDATE SET
                     item_name = EXCLUDED.item_name,
@@ -364,6 +391,9 @@ def main():
                     gross_item_amt = EXCLUDED.gross_item_amt,
                     net_item_amt = EXCLUDED.net_item_amt,
                     discount_amt = EXCLUDED.discount_amt,
+                    location = EXCLUDED.location,
+                    concept = EXCLUDED.concept,
+                    menu_item_id =  EXCLUDED.menu_item_id,
                     last_update = NOW()
                 """,
                 (
@@ -376,6 +406,9 @@ def main():
                     row["gross_item_amt"],
                     row["net_item_amt"],
                     row["discount_amt"],
+                    row["location"],
+                    row["concept"],
+                    row["menu_item_id"],
                 ),
             )
         db.conn.commit()

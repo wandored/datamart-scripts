@@ -3,6 +3,7 @@ Import sales mix and export menu engineering report to excel
 """
 
 import re
+import argparse
 from datetime import datetime
 
 import pandas as pd
@@ -50,17 +51,6 @@ def get_arguments():
     args = parser.parse_args()
 
     return args.year, args.period, args.week
-
-
-def get_start_date(year, period, week):
-    with DatabaseConnection() as db:
-        query = """
-            SELECT date FROM calendar
-            WHERE year = %s AND period = %s AND week = %s
-        """
-        db.cur.execute(query, (year, period, week))
-        result = db.cur.fetchone()
-    return result[0]
 
 
 def calculate_bread_basket(df, db):
@@ -115,43 +105,6 @@ def calculate_bread_basket(df, db):
     return df
 
 
-def update_location_names(df, db):
-    # import locationid and name from location table
-    db.cur.execute("SELECT locationid, name FROM location")
-    location = db.cur.fetchall()
-    location = pd.DataFrame(location, columns=["locationid", "name"])
-    location.rename(columns={"name": "location"}, inplace=True)
-    df = pd.merge(df, location, on="location", how="left", sort=False)
-
-    db.cur.execute("SELECT locationid, name, id FROM restaurants")
-    restaurants = db.cur.fetchall()
-    restaurants = pd.DataFrame(restaurants, columns=["locationid", "name", "id"])
-    restaurants.dropna(inplace=True)
-    restaurants.rename(columns={"name": "location", "id": "store_id"}, inplace=True)
-    df = pd.merge(df, restaurants, on="locationid", how="left", sort=False)
-
-    df.drop(columns=["locationid", "location_x"], inplace=True)
-    df.rename(columns={"location_y": "location"}, inplace=True)
-    df[["concept", "menu_item"]] = df["menu_item"].str.split(" - ", n=1, expand=True)
-    df = df.reindex(
-        columns=[
-            "location",
-            "store_id",
-            "concept",
-            "menu_item",
-            "quantity",
-            "menu_price",
-            "sales",
-            "category1",
-            "category2",
-            "category3",
-            "menu_cost",
-        ]
-    )
-
-    return df
-
-
 def removePreMods(df):
     # Remove toast Pre-Mods from MenuItem strings
     pre_mods = ["Add", "Extra", "Lite", "On Side"]
@@ -173,73 +126,89 @@ def merge_dataframes(df1, df2):
     return df
 
 
-def main(product_mix_csv, menu_analysis_csv, date, year, period, db):
-    product_mix = pd.read_csv(
-        product_mix_csv,
-        skiprows=3,
-        sep=",",
-        thousands=",",
-        usecols=[
-            "TransferDate",
-            "Textbox27",
-            "Qty",
-            "Cost",
-            "Total",
-            "Cat1",
-            "Cat2",
-            "Cat3",
+def get_product_mix(db, year, period, week):
+    query = """
+    SELECT
+        pm.store_id,
+        c.week_index,
+        c.period_index,
+        pm.item_name,
+        pm.concept,
+        pm.menu_item_id,
+        sum(pm.qty_sold) AS quantity,
+        avg(pm.menu_item_price) AS menu_price,
+        sum(pm.net_item_amt) AS sales,
+        m.category_1,
+        m.category_2,
+        m.category_3,
+        rc.recipe_cost AS menu_cost
+    FROM toast_product_mix pm
+    JOIN menu_items m
+        ON m.menu_item_id = pm.menu_item_id
+    JOIN calendar c
+        ON c.date = pm.date
+    JOIN restaurants r
+        ON r.id = pm.store_id
+    LEFT JOIN weekly_recipe_cost rc
+        ON rc.menu_item_id = m.menu_item_id
+        AND rc.store_id = pm.store_id
+        AND rc.year = c.year
+        AND rc.period = c.period
+        AND rc.week = c.week
+    WHERE c.year = %s
+        AND c.period = %s
+        AND c.week = %s
+    GROUP BY
+        pm.store_id,
+        c.week_index,
+        c.period_index,
+        pm.item_name,
+        pm.concept,
+        pm.menu_item_id,
+        m.category_1,
+        m.category_2,
+        m.category_3,
+        rc.recipe_cost
+    """
+    db.cur.execute(query, (year, period, week))
+    result = db.cur.fetchall()
+    product_mix = pd.DataFrame(
+        result,
+        columns=[
+            "store_id",
+            "week_index",
+            "period_index",
+            "menu_item",
+            "concept",
+            "menu_item_id",
+            "quantity",
+            "menu_price",
+            "sales",
+            "category1",
+            "category2",
+            "category3",
+            "menu_cost",
         ],
     )
-    product_mix.rename(
-        columns={
-            "TransferDate": "menu_item",
-            "Textbox27": "location",
-            "Qty": "quantity",
-            "Cost": "menu_price",
-            "Total": "sales",
-            "Cat1": "category1",
-            "Cat2": "category2",
-            "Cat3": "category3",
-        },
-        inplace=True,
-    )
-    # product_mix = removePreMods(product_mix)
 
-    product_mix.sort_values(by=["menu_item"], inplace=True)
-    product_mix["category1"] = product_mix["category1"].fillna("None")
-    product_mix["category2"] = product_mix["category2"].fillna("None")
-    product_mix["category3"] = product_mix["category3"].fillna("None")
+    return product_mix
 
-    menu_analysis = pd.read_csv(
-        menu_analysis_csv,
-        skiprows=3,
-        sep=",",
-        thousands=",",
-        usecols=["Location", "MenuItemName", "UnitCost_Loc"],
-    )
-    menu_analysis["Location"] = menu_analysis["Location"].str.strip()
-    menu_analysis.rename(
-        columns={
-            "Location": "location",
-            "MenuItemName": "menu_item",
-            "UnitCost_Loc": "menu_cost",
-        },
-        inplace=True,
-    )
-    menu_analysis["menu_cost"] = menu_analysis["menu_cost"].fillna(0)
-    df_merge = merge_dataframes(product_mix, menu_analysis)
-    menu_engineering = update_location_names(df_merge, db)
-    menu_engineering = calculate_bread_basket(menu_engineering, db)
 
-    menu_engineering["date"] = date
-    menu_engineering["period"] = period
-    menu_engineering["year"] = year
+def main():
+    year, period, week = get_arguments()
+
+    with DatabaseConnection() as db:
+        product_mix = get_product_mix(db, year, period, week)
+        print(product_mix)
+        menu_engineering = calculate_bread_basket(product_mix, db)
+
     menu_engineering["menu_cost"] = menu_engineering["menu_cost"].fillna(0)
     menu_engineering["cost_pct"] = menu_engineering.apply(
-        lambda row: row.menu_cost / row.menu_price if row.menu_price else 0, axis=1
+        lambda row: row.menu_cost / float(row.menu_price) if row.menu_price else 0,
+        axis=1,
     )
     menu_engineering["margin"] = menu_engineering.apply(
-        lambda row: row.menu_price - row.menu_cost, axis=1
+        lambda row: float(row.menu_price) - row.menu_cost, axis=1
     )
     menu_engineering["total_cost"] = menu_engineering.apply(
         lambda row: row.quantity * row.menu_cost, axis=1
@@ -249,13 +218,12 @@ def main(product_mix_csv, menu_analysis_csv, date, year, period, db):
     )
     menu_engineering = menu_engineering.reindex(
         columns=[
-            "location",
             "store_id",
-            "date",
-            "year",
-            "period",
-            "concept",
+            "week_index",
+            "period_index",
             "menu_item",
+            "concept",
+            "menu_item_id",
             "quantity",
             "menu_price",
             "menu_cost",
@@ -279,68 +247,60 @@ def main(product_mix_csv, menu_analysis_csv, date, year, period, db):
 
     menu_engineering = menu_engineering.dropna()
 
-    table_name = "menu_engineering"
-    temp_table_name = f"temp_{table_name}"
-    try:
-        menu_engineering.to_sql(
-            temp_table_name,
-            engine,
-            if_exists="replace",
-            index=False,
-            method="multi",
-            chunksize=1000,
-        )
-        update_query = sql.SQL(
-            """
-                INSERT INTO {table} (location, store_id, date, year, period, concept, menu_item, quantity, menu_price, menu_cost, margin, cost_pct, sales, total_cost, profit, category1, category2, category3)
-                SELECT t.location, t.store_id::integer, t.date, t.year::integer, t.period::integer, t.concept, t.menu_item, t.quantity, t.menu_price, t.menu_cost, t.margin, t.cost_pct, t.sales, t.total_cost, t.profit, t.category1, t.category2, t.category3
-                FROM {temp_table} AS t
-                ON CONFLICT (location, store_id, date, Menu_item) DO UPDATE
-                SET year = EXCLUDED.year,
-                period = EXCLUDED.period,
-                concept = EXCLUDED.concept,
-                quantity = EXCLUDED.quantity,
-                menu_price = EXCLUDED.menu_price,
-                menu_cost = EXCLUDED.menu_cost,
-                margin = EXCLUDED.margin,
-                cost_pct = EXCLUDED.cost_pct,
-                sales = EXCLUDED.sales,
-                total_cost = EXCLUDED.total_cost,
-                profit = EXCLUDED.profit,
-                category1 = EXCLUDED.category1,
-                category2 = EXCLUDED.category2,
-                category3 = EXCLUDED.category3
-                """
-        ).format(
-            table=sql.Identifier(table_name),
-            temp_table=sql.Identifier(temp_table_name),
-        )
-        db.cur.execute(update_query)
-        conn.commit()
-    except (IntegrityError, UniqueViolation) as e:
-        print(e)
-        return 1
-    except Exception as e:
-        print(e)
-        return 1
-    finally:
-        try:
-            db.cur.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
-            conn.commit()
-        except Exception as e:
-            print(e)
-            conn.rollback()
-    return 0
+    print(menu_engineering)
+    # table_name = "menu_engineering"
+    # temp_table_name = f"temp_{table_name}"
+    # try:
+    #     menu_engineering.to_sql(
+    #         temp_table_name,
+    #         engine,
+    #         if_exists="replace",
+    #         index=False,
+    #         method="multi",
+    #         chunksize=1000,
+    #     )
+    #     update_query = sql.SQL(
+    #         """
+    #             INSERT INTO {table} (location, store_id, date, year, period, concept, menu_item, quantity, menu_price, menu_cost, margin, cost_pct, sales, total_cost, profit, category1, category2, category3)
+    #             SELECT t.location, t.store_id::integer, t.date, t.year::integer, t.period::integer, t.concept, t.menu_item, t.quantity, t.menu_price, t.menu_cost, t.margin, t.cost_pct, t.sales, t.total_cost, t.profit, t.category1, t.category2, t.category3
+    #             FROM {temp_table} AS t
+    #             ON CONFLICT (location, store_id, date, Menu_item) DO UPDATE
+    #             SET year = EXCLUDED.year,
+    #             period = EXCLUDED.period,
+    #             concept = EXCLUDED.concept,
+    #             quantity = EXCLUDED.quantity,
+    #             menu_price = EXCLUDED.menu_price,
+    #             menu_cost = EXCLUDED.menu_cost,
+    #             margin = EXCLUDED.margin,
+    #             cost_pct = EXCLUDED.cost_pct,
+    #             sales = EXCLUDED.sales,
+    #             total_cost = EXCLUDED.total_cost,
+    #             profit = EXCLUDED.profit,
+    #             category1 = EXCLUDED.category1,
+    #             category2 = EXCLUDED.category2,
+    #             category3 = EXCLUDED.category3
+    #             """
+    #     ).format(
+    #         table=sql.Identifier(table_name),
+    #         temp_table=sql.Identifier(temp_table_name),
+    #     )
+    #     db.cur.execute(update_query)
+    #     conn.commit()
+    # except (IntegrityError, UniqueViolation) as e:
+    #     print(e)
+    #     return 1
+    # except Exception as e:
+    #     print(e)
+    #     return 1
+    # finally:
+    #     try:
+    #         db.cur.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
+    #         conn.commit()
+    #     except Exception as e:
+    #         print(e)
+    #         conn.rollback()
+    # return 0
 
 
 if __name__ == "__main__":
-    year, period, week = get_arguments()
-    print(f"Year: {year}, Period: {period}, Week: {week}")
-
-    menu_price_analysis = "./downloads/Menu Price Analysis.csv"
-    date = get_date(product_mix)
-    with DatabaseConnection() as db:
-        product_mix = get_product_mix(db)
-        period, year = get_period(date, db)
-        print(f"Date: {date}, Period: {period}, Year: {year}")
-        main(product_mix, menu_price_analysis, date, year, period, db)
+    main()

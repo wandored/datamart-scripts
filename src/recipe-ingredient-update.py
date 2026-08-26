@@ -110,10 +110,10 @@ def get_menu_recipe():
     # drop all rows where Category 1 is null
     df = df.dropna(subset=["Category 1"])
     # keep only Name and Recipe columns
-    df = df[["Name", "Recipe Name"]]
+    df = df[["Name", "Recipe"]]
     # split Name column into two columns
     df[["concept", "menu_item"]] = df["Name"].str.split(" - ", expand=True)
-    df = df.rename(columns={"Recipe Name": "recipe"})
+    df = df.rename(columns={"Recipe": "recipe"})
     return df
 
 

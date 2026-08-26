@@ -9,7 +9,7 @@ import os
 
 import pandas as pd
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from db_utils.dbconnect import DatabaseConnection
 from db_utils.toast_utils import ToastClient
@@ -153,29 +153,42 @@ def get_arguments():
         description="Generate fulfillment report for given business dates."
     )
     parser.add_argument(
-        "--business_date",
-        type=str,
-        help="Enter business date in YYYYMMDD format",
+        "--start_date",
+        type=lambda value: datetime.strptime(value, "%Y-%m-%d").date(),
+        required=True,
+        help="Enter business date in YYYY-MM-DD format",
     )
     args = parser.parse_args()
 
-    return args.business_date
+    return args.start_date
 
 
 def main():
-    business_date = get_arguments()
+    start_date = get_arguments()
+    end_date = (datetime.now() - timedelta(days=1)).date()
+    days = end_date - start_date
     # get list of known menu items from datamart
     with DatabaseConnection() as db:
         locations = get_locations(db)
         db.execute("SELECT menu_item_id, menu_item FROM menu_items")
         current_menu_items = pd.DataFrame(db.fetchall(), columns=["id", "name"])
 
-    r365_menu_items_api = get_r365_menu_item_list(
-        current_menu_items, locations, business_date
-    )
-    toast_menu_items_api = get_toast_menu_item_list()
+    new_menu_items = pd.DataFrame()
+    menu_item_frames = []
+    current_date = start_date
 
-    new_menu_items = clean_data(toast_menu_items_api, r365_menu_items_api)
+    while current_date <= end_date:
+        print(current_date)
+        business_date = current_date.strftime("%Y-%m-%d")
+        r365_menu_items_api = get_r365_menu_item_list(
+            current_menu_items, locations, business_date
+        )
+        toast_menu_items_api = get_toast_menu_item_list()
+
+        menu_item_frames.append(clean_data(toast_menu_items_api, r365_menu_items_api))
+        current_date += timedelta(days=1)
+
+    new_menu_items = pd.concat(menu_item_frames, ignore_index=True)
 
     # write the new file to a csv file
     # new_menu_items.to_csv("./output/new_menu_item_export.csv", index=False)

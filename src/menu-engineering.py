@@ -11,8 +11,6 @@ import openpyxl
 import pandas as pd
 from openpyxl.styles import NamedStyle
 
-pd.set_option("future.no_silent_downcasting", True)
-
 
 def removedups(x):
     """Turn the list into a dict then back to a list to remove duplicates"""
@@ -108,6 +106,10 @@ def removePreMods(df):
     # Create regex patterns for pre and post modifications
     pre_pattern = r"^(" + "|".join(pre_mods) + r")\s+"
     post_pattern = r"\s+(" + "|".join(post_mods) + r")$"
+
+    # print(df.loc[df["MenuItem"].isna(), ["MenuItem"]])
+    # print(df[df["MenuItem"].isna()].to_string())
+    df = df.dropna(subset=["MenuItem"])
 
     # Apply the regex patterns to the MenuItem column
     df["MenuItem"] = df["MenuItem"].apply(lambda x: re.sub(pre_pattern, "", x))

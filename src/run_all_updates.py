@@ -9,11 +9,12 @@ MODULES = [
     "src.purchase-item-update",
     "src.recipe-table-update",
     "src.item-conversion-update",
+    "src.toast-menu-items",
     "src.menu-item-table-update",
     "src.recipe-ingredients-flat",
     "src.weekly-item-base-cost",
     "src.recipe-ingredient-update",
-    "src.menu-engineering-online",
+    # "src.menu-engineering-online",
 ]
 
 

@@ -110,10 +110,10 @@ def get_menu_recipe():
     # drop all rows where Category 1 is null
     df = df.dropna(subset=["Category 1"])
     # keep only Name and Recipe columns
-    df = df[["Name", "Recipe Name"]]
+    df = df[["Name", "Recipe"]]
     # split Name column into two columns
     df[["concept", "menu_item"]] = df["Name"].str.split(" - ", expand=True)
-    df = df.rename(columns={"Recipe Name": "recipe"})
+    df = df.rename(columns={"Recipe": "recipe"})
     return df
 
 
@@ -151,23 +151,33 @@ def ingredient_update(db) -> pd.DataFrame:
 
     # truncate table and re-insert to preserve table structure and constraints
     try:
-        db.execute('truncate table "recipe_ingredients"')
-        db.commit()
-        recipe_ingredient.to_sql(
-            "recipe_ingredients", db.engine, index=False, if_exists="append"
+        db.execute("TRUNCATE TABLE public.recipe_ingredients")
+
+        records = recipe_ingredient[
+            ["concept", "menu_item", "recipe", "ingredient", "qty", "uofm"]
+        ].values.tolist()
+
+        db.executemany(
+            """
+            INSERT INTO public.recipe_ingredients
+                (concept, menu_item, recipe, ingredient, qty, uofm)
+            VALUES %s
+            """,
+            records,
         )
+
     except Exception as e:
-        db.rollback()
         print("Error writing to database, rolling back transaction.", e)
-        # table may not exist yet; create it
-        # try:
-        #     recipe_ingredient.to_sql(
-        #         "recipe_ingredients", db.engine, index=False, if_exists="replace"
-        #     )
-        # except IntegrityError:
-        #     print("Error writing to database: IntegrityError")
-        # except Exception as e:
-        #     print("Error writing to database:", e)
+        raise
+    # try:
+    #     db.execute('truncate table "recipe_ingredients"')
+    #     db.commit()
+    #     recipe_ingredient.to_sql(
+    #         "recipe_ingredients", db.engine, index=False, if_exists="append"
+    #     )
+    # except Exception as e:
+    #     db.rollback()
+    #     print("Error writing to database, rolling back transaction.", e)
 
     recipe_ingredient.to_csv(
         "/home/wandored/Sync/ReportData/recipe_ingredients.csv", index=False
@@ -291,18 +301,61 @@ def update_ingredient_cost(db) -> None:
 
     # truncate table and re-insert to preserve table structure and constraints
     try:
-        db.execute('truncate table "ingredient_cost"')
-        db.commit()
-        df.to_sql("ingredient_cost", db.engine, index=False, if_exists="append")
-    except Exception:
-        db.rollback()
-        # table may not exist yet; create it
-        try:
-            df.to_sql("ingredient_cost", db.engine, index=False, if_exists="replace")
-        except IntegrityError:
-            print("Error writing to database: IntegrityError")
-        except Exception as e:
-            print("Error writing to database:", e)
+        db.execute("TRUNCATE TABLE public.ingredient_cost")
+
+        records = df[
+            [
+                "item",
+                "store_id",
+                "store",
+                "date",
+                "amount",
+                "uofm",
+                "quantity",
+                "base_cost",
+                "base_uofm",
+                "base_qty",
+                "item_id",
+            ]
+        ].values.tolist()
+
+        db.executemany(
+            """
+            INSERT INTO public.ingredient_cost
+                (
+                    item,
+                    store_id,
+                    store,
+                    date,
+                    amount,
+                    uofm,
+                    quantity,
+                    base_cost,
+                    base_uofm,
+                    base_qty,
+                    item_id
+                )
+            VALUES %s
+            """,
+            records,
+        )
+
+    except Exception as e:
+        print("Error writing ingredient_cost:", e)
+        raise
+    # try:
+    #     db.execute('truncate table "ingredient_cost"')
+    #     db.commit()
+    #     df.to_sql("ingredient_cost", db.engine, index=False, if_exists="append")
+    # except Exception:
+    #     db.rollback()
+    #     # table may not exist yet; create it
+    #     try:
+    #         df.to_sql("ingredient_cost", db.engine, index=False, if_exists="replace")
+    #     except IntegrityError:
+    #         print("Error writing to database: IntegrityError")
+    #     except Exception as e:
+    #         print("Error writing to database:", e)
 
     return
 
@@ -348,18 +401,51 @@ def update_recipe_cost(db) -> None:
 
     # truncate table and re-insert to preserve table structure and constraints
     try:
-        db.execute('truncate table "recipe_cost"')
-        db.commit()
-        df.to_sql("recipe_cost", db.engine, index=False, if_exists="append")
-    except Exception:
-        db.rollback()
-        # table may not exist yet; create it
-        try:
-            df.to_sql("recipe_cost", db.engine, index=False, if_exists="replace")
-        except IntegrityError:
-            print("Error writing to database: IntegrityError")
-        except Exception as e:
-            print("Error writing to database:", e)
+        db.execute("TRUNCATE TABLE public.recipe_cost")
+
+        records = df[
+            [
+                "date",
+                "id",
+                "location",
+                "concept",
+                "menu_item",
+                "recipe_cost",
+            ]
+        ].values.tolist()
+
+        db.executemany(
+            """
+            INSERT INTO public.recipe_cost
+                (
+                    date,
+                    id,
+                    location,
+                    concept,
+                    menu_item,
+                    recipe_cost
+                )
+            VALUES %s
+            """,
+            records,
+        )
+
+    except Exception as e:
+        print("Error writing recipe_cost:", e)
+        raise
+    # try:
+    #     db.execute('truncate table "recipe_cost"')
+    #     db.commit()
+    #     df.to_sql("recipe_cost", db.engine, index=False, if_exists="append")
+    # except Exception:
+    #     db.rollback()
+    #     # table may not exist yet; create it
+    #     try:
+    #         df.to_sql("recipe_cost", db.engine, index=False, if_exists="replace")
+    #     except IntegrityError:
+    #         print("Error writing to database: IntegrityError")
+    #     except Exception as e:
+    #         print("Error writing to database:", e)
 
     return
 

@@ -124,5 +124,43 @@ def update_menu_item_table(csv_path: str):
         )
 
 
+# def update_toast_r365_menu_item_map():
+#     with DatabaseConnection() as db:
+#         query = """
+#         INSERT INTO toast_r365_menu_item_map (
+#             menu_item_id,
+#             item_guid,
+#             concept
+#         )
+#         SELECT
+#             mi.menu_item_id,
+#             t.item_guid,
+#             mi.concept
+#         FROM toast_menu_items t
+#         JOIN menu_items mi
+#             ON t.item_name = mi.menu_item
+#         ON CONFLICT (menu_item_id) DO NOTHING;
+#         """
+#         db.cur.execute(
+#             query,
+#         )
+#
+#         query = """
+#         SELECT
+#             t.item_name
+#         FROM toast_menu_items t
+#         LEFT JOIN toast_r365_menu_item_map m
+#             ON m.item_guid = t.item_guid
+#         WHERE m.item_guid IS NULL
+#         ORDER BY t.item_name;
+#         """
+#         db.cur.execute(
+#             query,
+#         )
+#         result = db.cur.fetchall()
+#         print(result)
+
+
 if __name__ == "__main__":
     update_menu_item_table("downloads/MenuItems_R365.csv")
+    # update_toast_r365_menu_item_map()

@@ -44,7 +44,7 @@ def main():
     url = "/menus/v2/menus"
 
     for loc in locations:
-        guid = loc["toast_guid"]
+        guid = str(loc["toast_guid"])
         concept = loc["concept"]
 
         payload = client.get_response_data(url, guid)

@@ -45,7 +45,7 @@ def get_uofm(db) -> pd.DataFrame:
     db.execute(
         """
         SELECT name, base_uofm, base_qty
-        FROM unitsofmeasure
+        FROM public.unitsofmeasure
         """
     )
     uofm = db.fetchall()
@@ -260,38 +260,47 @@ def ingredient_update_flat() -> pd.DataFrame:
         db.execute(
             """
             SELECT recipe_id, recipe_name
-            FROM recipes
+            FROM public.recipes
             """
         )
         recipes = db.fetchall()
-        recipes_df = pd.DataFrame(recipes, columns=["recipe_id", "recipe_name"])
+
+        recipes_df = pd.DataFrame(
+            recipes,
+            columns=["recipe_id", "recipe_name"],
+        )
+
         menu_item_recipes = flat_df[["menu_item_id", "recipe"]].drop_duplicates()
+
         menu_item_recipes = menu_item_recipes.merge(
             recipes_df,
             left_on="recipe",
             right_on="recipe_name",
             how="left",
         )[["menu_item_id", "recipe_id"]]
+
         try:
-            db.execute('truncate table "menu_item_recipes"')
-            db.commit()
-            menu_item_recipes.to_sql(
-                "menu_item_recipes",
-                db.engine,
+            db.execute("TRUNCATE TABLE public.menu_item_recipes")
+
+            records = menu_item_recipes.itertuples(
                 index=False,
-                if_exists="append",
+                name=None,
             )
-        except Exception:
-            db.rollback()
-            try:
-                menu_item_recipes.to_sql(
-                    "menu_item_recipes",
-                    db.engine,
-                    index=False,
-                    if_exists="replace",
+
+            db.executemany(
+                """
+                INSERT INTO public.menu_item_recipes (
+                    menu_item_id,
+                    recipe_id
                 )
-            except Exception as e:
-                print("Error writing to database:", e)
+                VALUES %s
+                """,
+                records,
+            )
+
+        except Exception as e:
+            db.rollback()
+            print("Error writing to database:", e)
 
         # ---------------------------------------------------------
         # 6️⃣ Aggregate duplicate ingredients
@@ -308,7 +317,7 @@ def ingredient_update_flat() -> pd.DataFrame:
         db.execute(
             """
             SELECT recipe_id, recipe_name
-            FROM recipes
+            FROM public.recipes
             """
         )
         recipes = db.fetchall()
@@ -319,24 +328,29 @@ def ingredient_update_flat() -> pd.DataFrame:
             right_on="recipe_name",
             how="left",
         )
-        # flat_df = flat_df.drop(columns=["recipe_name", "recipe"])
+        flat_df = flat_df.drop(columns=["recipe_name", "recipe"])
 
         # add item_id column by merging with item table
         db.execute(
             """
             SELECT itemid, name
-            FROM item
+            FROM public.item
             """
         )
         items = db.fetchall()
         items_df = pd.DataFrame(items, columns=["item_id", "ingredient"])
+
+        items_df["ingredient"] = items_df["ingredient"].str.strip()
+
+        flat_df["ingredient"] = flat_df["ingredient"].str.strip()
+
         flat_df = flat_df.merge(
             items_df,
             on="ingredient",
             how="left",
         )
-        # flat_df = flat_df.drop(columns=["ingredient"])
 
+        # flat_df = flat_df.drop(columns=["ingredient"])
         # ---------------------------------------------------------
         # 7️⃣ Write to database
         # ---------------------------------------------------------
@@ -352,25 +366,27 @@ def ingredient_update_flat() -> pd.DataFrame:
         ]
 
         try:
-            db.execute('truncate table "recipe_ingredients_flat"')
-            db.commit()
-            flat_df.to_sql(
-                "recipe_ingredients_flat",
-                db.engine,
-                index=False,
-                if_exists="append",
-            )
-        except Exception:
-            db.rollback()
-            try:
-                flat_df.to_sql(
-                    "recipe_ingredients_flat",
-                    db.engine,
-                    index=False,
-                    if_exists="replace",
+            db.execute("TRUNCATE TABLE public.recipe_ingredients_flat")
+
+            records = flat_df.itertuples(index=False, name=None)
+
+            db.executemany(
+                """
+                INSERT INTO public.recipe_ingredients_flat (
+                    menu_item_id,
+                    recipe_id,
+                    item_id,
+                    qty,
+                    uofm
                 )
-            except Exception as e:
-                print("Error writing to database:", e)
+                VALUES %s
+                """,
+                records,
+            )
+
+        except Exception as e:
+            print("Error writing recipe_ingredients_flat:", e)
+            raise
 
         return
 

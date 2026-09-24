@@ -67,8 +67,8 @@ def get_locations() -> pd.DataFrame:
         db.cur.execute(
             """
             SELECT id, name, concept, toast_guid, timezone
-            FROM restaurants
-            WHERE email IS NOT Null
+            FROM core.restaurants
+            WHERE toast_guid IS NOT Null
             ORDER BY name
             """
         )
@@ -337,7 +337,7 @@ def main():
             request_start = None
             request_end = None
 
-        guid = loc["toast_guid"]
+        guid = str(loc["toast_guid"])
         df, part_a_names = get_product_mix(
             client,
             guid,
@@ -345,6 +345,9 @@ def main():
             request_start,
             request_end,
         )
+
+        if df.empty:
+            continue
 
         df["location"] = loc["name"]
         df["store_id"] = loc["id"]
@@ -373,7 +376,7 @@ def main():
 
     product_mix = add_menu_item_id(product_mix)
 
-    product_mix.to_csv(f"./output/product_mix_{business_date}.csv", index=False)
+    # product_mix.to_csv(f"./output/product_mix_{business_date}.csv", index=False)
     # product_mix = product_mix[~product_mix["cost"].isnull()]
 
     # print(product_mix.head(30))

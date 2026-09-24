@@ -5,29 +5,21 @@ drop all items from the MenuItem_Export.csv that are not in the menu_items_expor
 print the new file to a new csv file
 """
 
-import os
-
 import pandas as pd
 import argparse
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from db_utils.dbconnect import DatabaseConnection
 from db_utils.toast_utils import ToastClient
 from db_utils.r365_utils import R365Client
 from db_utils.r365_importers import get_daily_sales
 
 
-# def format_r365_datetime(date_obj, tz_name, t=time.min):
-#     dt = datetime.combine(date_obj, t, tzinfo=ZoneInfo(tz_name))
-#     return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + dt.strftime("%z")
-
-
 def get_locations(db):
     db.cur.execute(
         """
-        SELECT locationid, name, timezone
-        FROM restaurants
-        WHERE email IS NOT Null
+        SELECT r365_guid, name, timezone
+        FROM core.restaurants
+        WHERE toast_guid IS NOT Null
         ORDER BY name
         """
     )
@@ -44,6 +36,10 @@ def get_start_date(year, period, week):
         """
         db.cur.execute(query, (year, period, week))
         result = db.cur.fetchone()
+        if result is None:
+            raise ValueError(
+                f"No calendar date found for year={year}, period={period}, week={week}"
+            )
     return result[0]
 
 
@@ -108,7 +104,7 @@ def get_r365_menu_item_list(current_menu_items, locations, business_date):
 
     rows = []
     for location in locations:
-        location_id = location["locationid"]
+        location_id = location["r365_guid"]
 
         menu_items = get_daily_sales(client, business_date, location_id)
 
@@ -132,19 +128,62 @@ def get_r365_menu_item_list(current_menu_items, locations, business_date):
         pd.DataFrame(rows).drop_duplicates().sort_values("name").reset_index(drop=True)
     )
 
-    # Remove restaurant prefix
+    # Keep the concept prefix separate so a Casual item does not mask a
+    # Steakhouse item that has not been mapped yet.
+    r365_items["concept"] = r365_items["name"].str.extract(
+        r"^(Casual|Steakhouse)\s*-\s*", expand=False
+    )
+
     r365_items["name"] = (
         r365_items["name"]
         .str.replace(r"^(Casual|Steakhouse)\s*-\s*", "", regex=True)
         .str.strip()
     )
 
-    r365_items = r365_items.drop_duplicates()
+    r365_items = r365_items.drop_duplicates(
+        subset=["category1", "category2", "category3", "name", "concept"]
+    ).reset_index(drop=True)
 
-    # Remove items already in the menu_items table
-    known_names = set(current_menu_items["name"])
-    new_items = r365_items[~r365_items["name"].isin(known_names)].reset_index(drop=True)
+    current_menu_items = current_menu_items.copy()
+    current_menu_items["concept"] = current_menu_items["name"].str.extract(
+        r"^(Casual|Steakhouse)\s*-\s*", expand=False
+    )
+    current_menu_items["name"] = (
+        current_menu_items["name"]
+        .str.replace(r"^(Casual|Steakhouse)\s*-\s*", "", regex=True)
+        .str.strip()
+    )
 
+    concept_frames = []
+    for concept in [None, "Casual", "Steakhouse"]:
+        if concept is None:
+            concept_mask = r365_items["concept"].isna()
+            known_names = set(
+                current_menu_items.loc[current_menu_items["concept"].isna(), "name"]
+            )
+        else:
+            concept_mask = r365_items["concept"] == concept
+            known_names = set(
+                current_menu_items.loc[current_menu_items["concept"] == concept, "name"]
+            )
+
+        concept_items = r365_items[concept_mask].copy()
+        if concept_items.empty:
+            continue
+
+        concept_items = concept_items[~concept_items["name"].isin(known_names)]
+        concept_frames.append(concept_items)
+
+    if not concept_frames:
+        return pd.DataFrame(
+            columns=["category1", "category2", "category3", "name", "concept"]
+        )
+
+    new_items = (
+        pd.concat(concept_frames, ignore_index=True)
+        .sort_values("name")
+        .reset_index(drop=True)
+    )
     return new_items
 
 
@@ -166,7 +205,6 @@ def get_arguments():
 def main():
     start_date = get_arguments()
     end_date = (datetime.now() - timedelta(days=1)).date()
-    days = end_date - start_date
     # get list of known menu items from datamart
     with DatabaseConnection() as db:
         locations = get_locations(db)
@@ -190,11 +228,6 @@ def main():
 
     new_menu_items = pd.concat(menu_item_frames, ignore_index=True)
 
-    # write the new file to a csv file
-    # new_menu_items.to_csv("./output/new_menu_item_export.csv", index=False)
-
-    # clear screen and print the new file
-    os.system("cls" if os.name == "nt" else "clear")
     print(new_menu_items.head(25))
 
 

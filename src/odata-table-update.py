@@ -208,7 +208,24 @@ def update_company(db, client):
         return 1
 
 
-def update_item(db, client):
+def get_recipe_items(csv_path: str):
+    df = pd.read_csv(csv_path)
+
+    df = df[["ID", "Name"]].rename(
+        columns={
+            "ID": "itemid",
+            "Name": "name",
+        }
+    )
+
+    df["category1"] = None
+    df["category2"] = None
+    df["category3"] = None
+
+    return df[["itemid", "name", "category1", "category2", "category3"]]
+
+
+def update_item(db, client, recipe_df):
     payload = get_purchase_items(client)
     df = pd.DataFrame(
         [
@@ -231,6 +248,11 @@ def update_item(db, client):
 
     df = df.astype(str).replace("nan", None)
     df = df.drop_duplicates(subset=["itemid"], keep="last")
+
+    df = pd.concat(
+        [df, recipe_df],
+        ignore_index=True,
+    )
     records = df[
         ["itemid", "name", "category1", "category2", "category3"]
     ].values.tolist()
@@ -328,5 +350,6 @@ if __name__ == "__main__":
         update_jobtitle(db, client)
         update_location(db, client)
         update_company(db, client)
-        update_item(db, client)
+        recipe_df = get_recipe_items("downloads/RecipeItems.csv")
+        update_item(db, client, recipe_df)
         update_sales_accounts(db, client)

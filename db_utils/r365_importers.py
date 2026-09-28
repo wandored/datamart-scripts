@@ -3,6 +3,19 @@ from urllib.parse import urlparse, parse_qs
 
 
 # Accounting
+def get_invoices(client, start_date=None, end_date=None, include_details=False):
+    """Fetch invoices in an inclusive modification timestamp range."""
+    return client.get_resource(
+        "accounting",
+        "accounts-payable/invoices",
+        collection_key="invoices",
+        modifiedOnStart=start_date,
+        modifiedOnEnd=end_date,
+        IncludeDetails="true" if include_details else "false",
+        PageSize=250,
+    )
+
+
 def get_glaccounts(client):
     return client.get_resource("accounting", "gl-accounts", collection_key="glAccounts")
 
@@ -176,6 +189,20 @@ def get_vendors(client, modified_on_start=None, modified_on_end=None):
     )
 
 
+def get_vendor_items(client, modified_on_start=None, modified_on_end=None, page_size=250):
+    params = {"pageSize": page_size}
+    if modified_on_start is not None:
+        params["modifiedOnStart"] = modified_on_start
+    if modified_on_end is not None:
+        params["modifiedOnEnd"] = modified_on_end
+    return client.get_resource(
+        "inventory",
+        "vendor-items",
+        collection_key="items",
+        **params,
+    )
+
+
 def get_vendor_invoices(
     client,
     modified_on_start=None,
@@ -185,11 +212,16 @@ def get_vendor_invoices(
     include_data="none",
     page_size=250,
 ):
+    """Fetch inventory invoices with nested details; include_data is legacy."""
     return client.get_resource(
         "inventory",
-        "inventory-counts",
+        "invoices",
+        collection_key="items",
         modifiedOnStart=modified_on_start,
         modifiedOnEnd=modified_on_end,
+        status=status,
+        locationIds=location_id,
+        pageSize=page_size,
     )
 
 

@@ -82,65 +82,6 @@ def get_transactions(
     return transactions
 
 
-# def get_transactions(
-#     client,
-#     location_id,
-#     start_date=None,
-#     end_date=None,
-# ):
-#     params = {
-#         "locationId": location_id,
-#         "modifiedOnStart": start_date,
-#         "modifiedOnEnd": end_date,
-#         "pageSize": 250,
-#     }
-#
-#     transactions = []
-#
-#     while True:
-#         print("REQUEST PARAMS:", params)
-#
-#         response = client.request(
-#             "GET",
-#             "/v1/accounting/transactions",
-#             params=params,
-#         )
-#
-#         transactions.extend(response.get("transactions", []))
-#
-#         next_link = response.get("nextLink")
-#         print("NEXT LINK:", next_link)
-#
-#         if not next_link:
-#             break
-#         print("NEXT LINK repr:", repr(next_link))
-#         print("NEXT LINK type:", type(next_link))
-#
-#         continuation_token = parse_qs(urlparse(next_link).query).get(
-#             "continuationToken", [None]
-#         )[0]
-#
-#         print("TOKEN repr:", repr(continuation_token))
-#         print("TOKEN length:", len(continuation_token) if continuation_token else None)
-#
-#         if not continuation_token:
-#             break
-#
-#         params = {
-#             "locationId": location_id,
-#             "continuationToken": continuation_token,
-#             "pageSize": 250,
-#         }
-#         parsed = urlparse(next_link)
-#
-#         print("PARSED QUERY:", repr(parsed.query))
-#         print(
-#             "PARSED TOKEN:",
-#             repr(parse_qs(parsed.query).get("continuationToken", [None])[0]),
-#         )
-#     return transactions
-
-
 # Core
 def get_locations(client):
     return client.get_resource("core", "locations")
@@ -189,7 +130,9 @@ def get_vendors(client, modified_on_start=None, modified_on_end=None):
     )
 
 
-def get_vendor_items(client, modified_on_start=None, modified_on_end=None, page_size=250):
+def get_vendor_items(
+    client, modified_on_start=None, modified_on_end=None, page_size=250
+):
     params = {"pageSize": page_size}
     if modified_on_start is not None:
         params["modifiedOnStart"] = modified_on_start
@@ -226,13 +169,34 @@ def get_vendor_invoices(
 
 
 # Labor
-def get_jobs(client, modified_on_start=None, modified_on_end=None):
+def get_jobs(client, modified_on_start=None, modified_on_end=None, page_size=250):
+    if not modified_on_start and not modified_on_end:
+        raise ValueError("Jobs require at least one modified-on date filter")
     return client.get_resource(
         "labor",
         "jobs",
         collection_key="data",
         modifiedOnStart=modified_on_start,
         modifiedOnEnd=modified_on_end,
+        pageSize=page_size,
+    )
+
+
+def get_employees(
+    client, location_ids, modified_on_start=None, modified_on_end=None, page_size=250
+):
+    if not location_ids:
+        raise ValueError("Employees require at least one location")
+    if not modified_on_start and not modified_on_end:
+        raise ValueError("Employees require at least one modified-on date filter")
+    return client.get_resource(
+        "labor",
+        "employees",
+        collection_key="data",
+        locations=",".join(str(location_id) for location_id in location_ids),
+        modifiedOnStart=modified_on_start,
+        modifiedOnEnd=modified_on_end,
+        pageSize=page_size,
     )
 
 
@@ -240,6 +204,38 @@ def get_jobs(client, modified_on_start=None, modified_on_end=None):
 
 
 # Sales
+def get_daily_sales_pages(client, business_date, location_id):
+    """Fetch a complete snapshot; never hide a failed continuation request."""
+    try:
+        response = client.request(
+            "GET", "/v1/sales/daily-sales",
+            params={"businessDate": str(business_date), "location": str(location_id),
+                    "pageSize": 250},
+        )
+    except HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            # The API does not distinguish a missing location from a missing DSS.
+            # Leave stored data untouched for either case.
+            return []
+        raise
+
+    pages = []
+    followed_links = set()
+    while True:
+        if not isinstance(response, dict) or not isinstance(response.get("data"), dict):
+            raise ValueError("Daily sales response requires a summary object")
+        if "nextLink" not in response:
+            raise ValueError("Daily sales response is missing pagination metadata")
+        pages.append(response["data"])
+        next_link = response["nextLink"]
+        if next_link is None:
+            return pages
+        if not isinstance(next_link, str) or not next_link or next_link in followed_links:
+            raise ValueError("Invalid or repeated daily sales continuation link")
+        followed_links.add(next_link)
+        response = client.request("GET", next_link)
+
+
 def get_daily_sales(client, business_date, location_id):
     try:
         return client.get_resource(
@@ -256,3 +252,8 @@ def get_daily_sales(client, business_date, location_id):
 
 
 # User-Management
+def get_users(client, page_size=250):
+    return client.get_resource(
+        "user-management", "users", collection_key="entities",
+        next_link_key="nextPage", pageSize=page_size,
+    )

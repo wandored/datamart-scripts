@@ -12,11 +12,15 @@ from db_utils.dbconnect import DatabaseConnection
 
 
 class ToastClient:
-    def __init__(self):
+    def __init__(self, load_locations=True):
         self.api_access_url = Config.TOAST_API_ACCESS_URL
         self.access_token = self.generate_access_token()
-        with DatabaseConnection() as self.db_connection:
-            self.guid_list = self.fetch_locations(self.db_connection.cur)
+        # New source updaters select their own explicitly scoped locations.
+        # Keep the legacy selection available to existing callers.
+        self.guid_list = pd.DataFrame(columns=["id", "name", "toast_guid"])
+        if load_locations:
+            with DatabaseConnection() as self.db_connection:
+                self.guid_list = self.fetch_locations(self.db_connection.cur)
 
         self.headers = {
             "Toast-Restaurant-External-ID": None,  # Set dynamically for each request
@@ -46,7 +50,9 @@ class ToastClient:
 
     # Return Current Access Token
     def get_access_token(self):
-        return self.access_token["accessToken"] if self.access_token else None
+        if isinstance(self.access_token, dict):
+            return self.access_token.get("accessToken")
+        return self.access_token
 
     def get_api_access_url(self):
         return self.api_access_url
@@ -65,14 +71,14 @@ class ToastClient:
                     cache = json.load(f)
                     token = cache.get("token")
                     if isinstance(token, dict):
-                        token = token.get("token")
+                        token = token.get("accessToken") or token.get("token")
                     if token and isinstance(token, str):
                         payload = self.decode_jwt(token)
                         exp = payload.get("exp", 0)
                         if time.time() < exp - 60:  # valid for more than 1 minute
                             return token
-        except Exception as e:
-            logging.warning(f"Error reading token cache: {e}")
+        except Exception:
+            logging.warning("Unable to read Toast token cache; requesting a new token")
 
         url = self.api_access_url + "/authentication/v1/authentication/login"
         headers = {
@@ -95,11 +101,74 @@ class ToastClient:
                 logging.info("Fetched new access token")
                 return token
             else:
-                logging.info(f"Failed to fetch access token. Response: {response.text}")
+                logging.error("Toast authentication returned no token")
                 return None
-        except requests.RequestException as e:
-            logging.error(f"Error fetching access token: {e}")
+        except requests.RequestException:
+            logging.error("Toast authentication request failed")
             return None
+
+    def request(self, endpoint, guid, params=None):
+        """Authenticated GET with a timeout and bounded transient-error retries.
+
+        Return the response so pagination callers can inspect its headers. Errors
+        never include response bodies or authentication headers in their message.
+        """
+        if guid is None:
+            raise ValueError("GUID is required for Toast API requests")
+        token = self.get_access_token()
+        if not token:
+            raise RuntimeError("Toast authentication did not return an access token")
+        if not endpoint.startswith("/") or endpoint.startswith("//"):
+            raise ValueError("Toast endpoint must be a relative API path")
+        headers = {
+            "Toast-Restaurant-External-ID": str(guid),
+            "Authorization": f"Bearer {token}",
+        }
+        for attempt in range(3):
+            try:
+                response = requests.get(
+                    self.api_access_url.rstrip("/") + endpoint,
+                    headers=headers,
+                    params=params,
+                    timeout=60,
+                    allow_redirects=False,
+                )
+            except (requests.Timeout, requests.ConnectionError):
+                if attempt == 2:
+                    raise requests.RequestException(
+                        f"Toast GET {endpoint} failed for restaurant {guid} after 3 attempts"
+                    ) from None
+            else:
+                if 200 <= response.status_code < 300:
+                    return response
+                retryable = response.status_code in (429, 500, 502, 503, 504)
+                if not retryable or attempt == 2:
+                    raise requests.HTTPError(
+                        f"Toast GET {endpoint} for restaurant {guid}: HTTP {response.status_code}",
+                        response=response,
+                    )
+                # Do not retry earlier than a long/unsupported Retry-After value.
+                retry_after = response.headers.get("Retry-After")
+                if retry_after is not None:
+                    try:
+                        delay = float(retry_after)
+                    except ValueError:
+                        delay = float("inf")
+                    if not 0 <= delay <= 60:
+                        raise requests.HTTPError(
+                            f"Toast restaurant {guid}: HTTP {response.status_code}; retry later",
+                            response=response,
+                        ) from None
+                    time.sleep(delay)
+                    continue
+            time.sleep(2 ** attempt)
+
+    def get_restaurant(self, guid):
+        """Return a single RestaurantInfo object, including archived locations."""
+        return self.request(
+            f"/restaurants/v1/restaurants/{guid}", guid,
+            params={"includeArchived": "true"},
+        ).json()
 
     def get_response_data(self, url, guid, params=None, rate_limit_wait=1.0):
         """
@@ -126,14 +195,7 @@ class ToastClient:
             if page_token:
                 request_params["pageToken"] = page_token
 
-            self.headers["Toast-Restaurant-External-ID"] = guid
-            response = requests.get(
-                self.api_access_url + url, headers=self.headers, params=request_params
-            )
-
-            if not response.ok:
-                print(f"Error {response.status_code}: {response.text}")
-                break
+            response = self.request(url, guid, params=request_params)
 
             # Add current page of data to results
             data = response.json()
@@ -168,6 +230,7 @@ class ToastClient:
         params=None,
         page_size=100,
         rate_limit_wait=1.0,
+        parse_float=None,
     ):
         """
         Fetch all pages from a Toast endpoint that uses page-number pagination.
@@ -178,12 +241,15 @@ class ToastClient:
             params (dict, optional): Initial query parameters.
             page_size (int): Number of records per page (max 100).
             rate_limit_wait (float): Delay between requests.
+            parse_float: Optional JSON number decoder (e.g. Decimal for source prices).
 
         Returns:
             list: Aggregated results from all pages.
         """
         if guid is None:
             raise ValueError("GUID is required for Toast API requests.")
+        if type(page_size) is not int or not 1 <= page_size <= 100:
+            raise ValueError("page_size must be an integer from 1 through 100")
 
         results = []
         page = 1
@@ -193,19 +259,9 @@ class ToastClient:
             request_params["page"] = page
             request_params["pageSize"] = page_size
 
-            self.headers["Toast-Restaurant-External-ID"] = guid
+            response = self.request(url, guid, params=request_params)
 
-            response = requests.get(
-                self.api_access_url + url,
-                headers=self.headers,
-                params=request_params,
-            )
-
-            if not response.ok:
-                print(f"Error {response.status_code}: {response.text}")
-                break
-
-            data = response.json()
+            data = response.json(parse_float=parse_float) if parse_float else response.json()
 
             if isinstance(data, list):
                 results.extend(data)
@@ -217,10 +273,8 @@ class ToastClient:
             if records < page_size:
                 break
 
-            # Or, if you prefer, verify the Link header.
-            if "next" not in response.links:
-                break
-
+            # A full page may have a continuation even without a Link header.
+            # Request until a short/empty page so a missing header cannot truncate data.
             page += 1
             time.sleep(rate_limit_wait)
 

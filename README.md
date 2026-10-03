@@ -6,9 +6,7 @@ Collection of utilities and scripts used to manage and update DataMart tables
 * MenuItems_R365.csv
 * Menu Price Analysis.csv
 * Product Mix.csv
-* PurchaseItems.csv
 * RecipeItems.csv
-* UnitOfMeasure.csv
 * ingredients.csv
 * Receiving by Purchased Item.csv (item specific)
 
@@ -29,7 +27,168 @@ Collection of utilities and scripts used to manage and update DataMart tables
 - scripts can be run from the command line using:
 python -m src.<script_name>
 
+### R365 employees, jobs, and users
+
+The regular `src.r365-api-update` run also syncs jobs and employees modified
+today (local time), plus all users. Employees are scoped to the locations returned
+by the locations API. To run only these syncs:
+
+```sh
+.venv/bin/python -m src.r365-api-update --sync jobs employees users
+```
+
+For an initial load or a missed date range, supply **both** labor date boundaries:
+
+```sh
+.venv/bin/python -m src.r365-api-update --sync jobs employees users \
+  --modified-on-start 2000-01-01 --modified-on-end 2026-09-28
+```
+
+Choose dates covering the required history through the current day. A single
+boundary selects only that day. Date filters apply to employees and jobs; users
+are always fetched in full. All three endpoints are paginated.
+
+These syncs upsert existing tables; they do not create or alter schemas or delete
+records absent from the response. Employees use `id` as their primary key and
+UUID arrays for `other_locations_id` and `other_jobs_id`. POS mappings are written
+to `r365.employee_map` using `pos_employee_id` as the conflict key, in the same
+transaction as employees. Missing POS IDs skip only the mapping. Duplicate
+employee rows with identical mapped values are combined; conflicting values
+raise an error before writing.
+
+Users use UUID arrays for `locations_id`, `user_rolls_id`, and `report_rolls_id`.
+The API's `canGrantAccessBeyondPersonalLevel` maps to `can_grant_access`.
+`all_reports_access` is omitted because the endpoint does not supply it: existing
+values are preserved, and new rows use the table's `false` default. Jobs do not
+write responsibilities.
+
+### R365 daily sales
+
+For a **new installation**, apply
+[`db_utils/schema/r365_daily_sales.sql`](db_utils/schema/r365_daily_sales.sql).
+For an **existing ticket-level sales_details table**, apply
+[`db_utils/schema/r365_sales_details_daily_migration.sql`](db_utils/schema/r365_sales_details_daily_migration.sql)
+instead. Both require PostgreSQL 15+ for null-safe group uniqueness.
+
+Stop scheduled imports while migrating. The migration aggregates all stored
+current detail rows belonging to current tickets, preserving every business date
+(including dates older than two years), then recreates `r365.sales_details` and
+creates `r365.sales_account` in one transaction. It removes the original ticket
+line IDs and inactive source rows. It does not call the API or backfill missing
+dates. There is no `CASCADE`: dependent views or foreign keys block the migration
+and roll back the transaction. Update those consumers before retrying. Reapply
+any custom grants on the recreated details table.
+
+```sh
+psql --dbname YOUR_DATABASE -v ON_ERROR_STOP=1 -f db_utils/schema/r365_sales_details_daily_migration.sql
+```
+
+The six tables are `r365.daily_sales`, `r365.sales_tickets`,
+`r365.sales_details`, `r365.sales_account`, `r365.sales_payments`, and
+`r365.sales_ticket_taxes`. Ticket, payment, and tax imports remain enabled.
+
+`r365.sales_details` contains one row for each combination of:
+
+- `business_date`, `location_id`
+- `pos_item_id`, `pos_item_name`
+- `void`, `sales_account_id`
+- `menu_item_category_1`, `menu_item_category_2`, `menu_item_category_3`
+
+`sale_amount` and `quantity` are sums of the deduplicated source lines across all
+pages/tickets for that day/location. Null grouping values are retained; null
+measures are ignored in sums, with an all-null sum remaining null. Voided lines
+remain separate and are not subtracted or excluded automatically. The generated
+bigint `id` is a local surrogate key, not an R365 detail ID. A
+`UNIQUE NULLS NOT DISTINCT` constraint covers all grouping columns, so reruns
+also update groups with missing categories or references. Upserts replace totals;
+they never add the downloaded totals to the stored totals. Disappearing groups
+become inactive only after a complete successful day/location download.
+
+`r365.sales_account` stores the source UUID `id`, `name`, `number`, `gl_type`, and
+`last_synced_at`. Join it using `sales_details.sales_account_id = sales_account.id`.
+Names/numbers are not keys: separate account IDs remain separate even if their
+labels match across locations. Location is carried on the sales totals. Account
+attributes reflect the most recently imported values, not historical versions.
+
+The summary, ticket, account, and payment tables use R365 UUID IDs; taxes use
+`(sales_ticket_id, tax_index)`, with a zero-based array position. Locations and
+servers are stored only as IDs; server names, payroll IDs, location names/numbers,
+and free-text ticket comments are excluded from this import. No raw payload is
+stored. Existing employee/location imports are unchanged.
+
+```sh
+.venv/bin/python -m src.r365-api-update --sync daily-sales
+.venv/bin/python -m src.r365-api-update --sync daily-sales \
+  --business-date-start 2026-09-01 --business-date-end 2026-09-29
+```
+
+The regular update also runs daily sales. The default window is the previous
+seven completed dates according to the runtime's local calendar. Both daily-sales
+entry points select locations from `core.restaurants` where `active IS TRUE`
+and `r365_guid IS NOT NULL`, using `r365_guid` as the API location ID and the
+restaurant's `timezone` for timestamp conversion. The R365 locations API does not
+determine which restaurants receive daily-sales requests. A single date
+boundary selects one day. These are business-date filters, separate from the
+existing labor modification-date arguments. Older corrections require an explicit
+rerun of their business dates. No automatic retention cutoff deletes old data.
+To backfill two completed years as of September 30, 2026 (adjust dates when running):
+
+```sh
+.venv/bin/python -m src.r365-api-update --sync daily-sales \
+  --business-date-start 2024-09-30 --business-date-end 2026-09-29
+```
+
+The backfill still requests full tickets from R365 but stores their item totals
+at the daily grain. It processes only currently active restaurants; historical
+closed restaurants are not selected. Missing API days are reported as skipped,
+so a requested two-year range does not guarantee R365 supplies every day.
+
+Each location/day is fully fetched and validated before one transaction upserts
+the summary and children. A repeated summary across pages is stored once.
+Incomplete or conflicting pages fail before writes; a failed write rolls back
+the entire location/day. Earlier successful location/days remain committed.
+An initial 404 skips that location/day without changing stored rows: R365 does
+not distinguish missing locations from missing summaries in that response.
+A continuation 404 fails the sync rather than treating a partial download as empty.
+Explicitly empty/null arrays in a valid complete summary mean no child rows;
+missing arrays or pagination metadata are rejected as incomplete.
+
+Ticket children and daily item groups absent from a successful complete snapshot become `is_current = false`;
+returned children become current again. No rows are deleted. `last_synced_at`
+records when a row was last received; inactive rows retain their previous value.
+This is current-state synchronization, not a full change-history archive. Tax
+slots can be overwritten if the source reorders its array.
+
+Reporting views must filter child tables with `is_current = true`. Aggregate
+items, payments, and taxes separately before joining them to avoid multiplying
+amounts. Location/server/account IDs can join your existing reference tables;
+the setup adds foreign keys only between these sales tables. Daily item totals
+join summaries on `(location_id, business_date)` and have no ticket foreign key;
+retrieve individual item lines from R365 when needed.
+
+Money, quantities, and rates use PostgreSQL `numeric`. Timestamp offsets are
+preserved as instants in `timestamptz`; offset-free timestamps require the
+restaurant's `timezone` to be an IANA timezone (for example,
+`America/New_York`) or a supported US Windows timezone name. Eastern, Central,
+Mountain, US Mountain (Arizona), Pacific, Alaskan, Hawaiian Standard Time, and
+UTC are mapped using Unicode CLDR; daylight-saving rules come from the resulting
+IANA zone. Unknown zones and ambiguous/nonexistent DST times fail
+before writes instead of guessing an instant.
+
+Safe mock-based checks:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -p 'test_r365*sync.py'
+```
+
+The optional PostgreSQL test requires a fresh isolated instance under
+`/tmp/r365-sales-pg-*`, Unix socket port 55439, user `sales_test`, database
+`postgres`. Set `R365_TEST_PG_SOCKET` to that socket directory and run
+`test_r365_daily_sales_postgres_sync.py`. It creates and retains its test tables;
+never point it at an existing database.
+
 ## Script Descriptions
+
 | Script                             | Description                                                                                                           |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | **budget-update.py**               | Reads budget data from CSV files, processes it, and writes it to PostgreSQL. Normalizes values and handles conflicts. |

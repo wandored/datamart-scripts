@@ -1,4 +1,5 @@
 import requests
+from urllib.parse import urlsplit
 from db_utils.config import Config
 
 
@@ -22,7 +23,12 @@ class R365Client:
         if endpoint.startswith("http"):
             url = endpoint
         else:
-            url = f"{self.base_url}{endpoint}"
+            base = urlsplit(self.base_url)
+            if base.path and endpoint.startswith(f"{base.path}/"):
+                # Continuation links can already include the /public base path.
+                url = f"{base.scheme}://{base.netloc}{endpoint}"
+            else:
+                url = f"{self.base_url}{endpoint}"
 
         response = self.session.request(
             method=method,
@@ -39,7 +45,9 @@ class R365Client:
 
         return None
 
-    def get_all(self, endpoint, params=None, collection_key="items"):
+    def get_all(
+        self, endpoint, params=None, collection_key="items", next_link_key="nextLink"
+    ):
 
         response = self.request(
             "GET",
@@ -55,7 +63,7 @@ class R365Client:
             elif records is not None:
                 yield records
 
-            next_link = response.get("nextLink")
+            next_link = response.get(next_link_key)
 
             if not next_link:
                 break
@@ -65,8 +73,13 @@ class R365Client:
                 next_link,
             )
 
-    def get_resource(self, domain, resource, collection_key="items", **params):
+    def get_resource(
+        self, domain, resource, collection_key="items", next_link_key="nextLink", **params
+    ):
         endpoint = f"/v1/{domain}/{resource}"
         return list(
-            self.get_all(endpoint, params=params, collection_key=collection_key)
+            self.get_all(
+                endpoint, params=params, collection_key=collection_key,
+                next_link_key=next_link_key,
+            )
         )

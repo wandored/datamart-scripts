@@ -17,6 +17,13 @@ This repository contains Python data integration, ETL, reporting, and analytics 
 
 Follow the existing virtual environment and project configuration rather than creating a new environment.
 
+## Python Environment
+
+- This project uses the `.venv` virtual environment.
+- When running Python commands, tests, or project scripts, use the project's
+  virtual environment.
+- Prefer `.venv/bin/python` if the active interpreter is uncertain.
+
 ## General Development Rules
 
 * Inspect existing modules and shared utilities before creating new implementations.

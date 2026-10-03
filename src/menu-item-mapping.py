@@ -228,6 +228,9 @@ def main():
 
     new_menu_items = pd.concat(menu_item_frames, ignore_index=True)
 
+    new_menu_items = new_menu_items.sort_values(by=["name"], ascending=[True])
+    # remove duplicates from the new file
+    new_menu_items = new_menu_items.drop_duplicates("name")
     print(new_menu_items.head(25))
 
 

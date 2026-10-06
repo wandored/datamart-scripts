@@ -3,15 +3,17 @@
 Set R365_TEST_PG_SOCKET to its Unix socket directory (port 55439, user sales_test).
 The test creates the sales tables and deliberately leaves them in the test database.
 """
+
 import copy
 import os
-from pathlib import Path
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import psycopg2
 
-from test_r365_daily_sales_sync import module, page, ticket, uid
+from src.r365_sync import daily_sales
+from test_r365_daily_sales_sync import page, ticket, uid
 
 
 @unittest.skipUnless(os.environ.get("R365_TEST_PG_SOCKET"), "Requires temporary PostgreSQL instance")
@@ -36,7 +38,7 @@ class DailySalesPostgresTests(unittest.TestCase):
         def sync(response):
             client.request.return_value = response
             with patch("db_utils.dbconnect.psycopg2.connect", side_effect=test_connection):
-                module.sync_daily_sales(client, [uid(50)], "2026-09-29", "2026-09-29")
+                daily_sales.sync_daily_sales(client, [uid(50)], "2026-09-29", "2026-09-29")
 
         def counts(table):
             with connection.cursor() as cur:

@@ -8,8 +8,16 @@ from uuid import UUID
 from requests import HTTPError, Response
 
 import test_r365_invoice_sync as invoice_tests
-
-module = invoice_tests.module
+from src.r365_sync import (
+    daily_sales,
+    dates,
+    sales_account,
+    sales_details,
+    sales_payments,
+    sales_ticket_taxes,
+    sales_tickets,
+    values,
+)
 
 
 def uid(number):
@@ -52,7 +60,7 @@ class DailySalesSyncTests(unittest.TestCase):
     setUp = invoice_tests.InvoiceSyncTests.setUp
 
     def sync(self):
-        module.sync_daily_sales(self.client, [uid(50)], "2026-09-29", "2026-09-29")
+        daily_sales.sync_daily_sales(self.client, [uid(50)], "2026-09-29", "2026-09-29")
 
     def test_default_sync_uses_active_restaurant_ids_and_database_timezone(self):
         self.connection.cursor.return_value.fetchall.return_value = [
@@ -61,8 +69,8 @@ class DailySalesSyncTests(unittest.TestCase):
         response = page()
         response["data"]["salesTickets"][0]["saleDateTime"] = "2026-09-29T12:00:00"
         self.client.request.return_value = response
-        with patch.object(module, "get_locations") as api_locations:
-            module.sync_daily_sales(
+        with patch("db_utils.r365_importers.get_locations") as api_locations:
+            daily_sales.sync_daily_sales(
                 self.client, business_date_start="2026-09-29", business_date_end="2026-09-29",
             )
         api_locations.assert_not_called()
@@ -78,7 +86,7 @@ class DailySalesSyncTests(unittest.TestCase):
 
     def test_no_active_restaurants_skips_api_and_writes(self):
         self.connection.cursor.return_value.fetchall.return_value = []
-        module.sync_daily_sales(self.client, business_date_start="2026-09-29")
+        daily_sales.sync_daily_sales(self.client, business_date_start="2026-09-29")
         self.client.request.assert_not_called()
         self.execute.assert_not_called()
         self.assertIn("No active restaurants", self.output.getvalue())
@@ -166,12 +174,12 @@ class DailySalesSyncTests(unittest.TestCase):
     def test_null_arrays_and_nullable_identifiers_keep_explicit_columns(self):
         record = ticket()
         record.update(salesDetails=None, salesPayments=None, taxDetail=None, server=None)
-        raw = module.r365_sales_detail_rows([record])
-        self.assertEqual(len(module.r365_sales_details(raw, "2026-09-29", uid(50)).columns), 11)
-        self.assertTrue(module.r365_sales_accounts(raw).empty)
-        self.assertTrue(module.r365_sales_payments([record]).empty)
-        self.assertTrue(module.r365_sales_ticket_taxes([record]).empty)
-        self.assertIsNone(module.r365_sales_tickets([record], UUID(int=1)).iloc[0].server_id)
+        raw = sales_details.r365_sales_detail_rows([record])
+        self.assertEqual(len(sales_details.r365_sales_details(raw, "2026-09-29", uid(50)).columns), 11)
+        self.assertTrue(sales_account.r365_sales_accounts(raw).empty)
+        self.assertTrue(sales_payments.r365_sales_payments([record]).empty)
+        self.assertTrue(sales_ticket_taxes.r365_sales_ticket_taxes([record]).empty)
+        self.assertIsNone(sales_tickets.r365_sales_tickets([record], UUID(int=1)).iloc[0].server_id)
 
     def test_tax_failure_rolls_back_inactivation_and_reports_no_success(self):
         self.client.request.return_value = page()
@@ -194,15 +202,15 @@ class DailySalesSyncTests(unittest.TestCase):
             changed = ticket(index)
             changed["salesDetails"][0][field] = value
             tickets.append(changed)
-        raw = module.r365_sales_detail_rows(tickets)
-        grouped = module.r365_sales_details(raw, "2026-09-29", uid(50))
+        raw = sales_details.r365_sales_detail_rows(tickets)
+        grouped = sales_details.r365_sales_details(raw, "2026-09-29", uid(50))
         self.assertEqual(len(grouped), 7)
         self.assertEqual(grouped.iloc[0].sale_amount, Decimal("20.50"))
         self.assertEqual(grouped.iloc[0].quantity, Decimal("2.250"))
         self.assertEqual(grouped.iloc[0].location_id, UUID(int=50))
         self.assertEqual(grouped.iloc[0].business_date, date(2026, 9, 29))
         self.assertEqual(set(grouped["void"]), {True, False})
-        self.assertEqual(len(module.r365_sales_accounts(raw)), 2)
+        self.assertEqual(len(sales_account.r365_sales_accounts(raw)), 2)
 
     def test_rollup_null_measures_and_duplicate_source_lines(self):
         first = ticket()
@@ -211,13 +219,13 @@ class DailySalesSyncTests(unittest.TestCase):
         second["id"] = uid(3)
         second["salesDetails"][0]["id"] = uid(103)
         second["salesDetails"][0]["quantity"] = 2
-        raw = module.r365_sales_detail_rows([first, first, second])
-        grouped = module.r365_sales_details(raw, "2026-09-29", uid(50))
+        raw = sales_details.r365_sales_detail_rows([first, first, second])
+        grouped = sales_details.r365_sales_details(raw, "2026-09-29", uid(50))
         self.assertEqual(len(grouped), 1)
         self.assertIsNone(grouped.iloc[0].sale_amount)
         self.assertIsNone(grouped.iloc[0].pos_item_id)
         self.assertEqual(grouped.iloc[0].quantity, Decimal("2"))
-        self.assertTrue(module.r365_sales_accounts(raw).empty)
+        self.assertTrue(sales_account.r365_sales_accounts(raw).empty)
 
     def test_conflicting_account_attributes_fail_before_writes(self):
         second = ticket(3)
@@ -228,22 +236,22 @@ class DailySalesSyncTests(unittest.TestCase):
         self.connect.assert_not_called()
 
     def test_default_dates_and_single_boundary(self):
-        with patch.object(module, "date") as clock:
+        with patch.object(dates, "date") as clock:
             clock.today.return_value = date(2026, 9, 30)
-            self.assertEqual(module.daily_sales_date_range(), (date(2026, 9, 23), date(2026, 9, 29)))
-        self.assertEqual(module.daily_sales_date_range(None, "2026-09-29"),
+            self.assertEqual(dates.daily_sales_date_range(), (date(2026, 9, 23), date(2026, 9, 29)))
+        self.assertEqual(dates.daily_sales_date_range(None, "2026-09-29"),
                          (date(2026, 9, 29), date(2026, 9, 29)))
         with self.assertRaises(ValueError):
-            module.daily_sales_date_range("2026-09-30", "2026-09-29")
+            dates.daily_sales_date_range("2026-09-30", "2026-09-29")
 
     def test_local_timestamp_conversion_and_dst_ambiguity(self):
-        self.assertEqual(module.sales_timestamp("2026-09-29T12:00:00", "America/New_York"),
+        self.assertEqual(values.sales_timestamp("2026-09-29T12:00:00", "America/New_York"),
                          datetime(2026, 9, 29, 16, tzinfo=timezone.utc))
         for stamp, zone in (("2026-09-29T12:00:00", None),
                             ("2026-11-01T01:30:00", "America/New_York"),
                             ("2026-03-08T02:30:00", "America/New_York")):
             with self.assertRaises(ValueError):
-                module.sales_timestamp(stamp, zone)
+                values.sales_timestamp(stamp, zone)
 
     def test_windows_timezones_use_seasonal_offsets(self):
         for zone, winter_hour, summer_hour in (
@@ -259,16 +267,16 @@ class DailySalesSyncTests(unittest.TestCase):
             with self.subTest(zone=zone):
                 for month, hour in ((1, winter_hour), (7, summer_hour)):
                     self.assertEqual(
-                        module.sales_timestamp(f"2026-{month:02d}-15T12:00:00", zone),
+                        values.sales_timestamp(f"2026-{month:02d}-15T12:00:00", zone),
                         datetime(2026, month, 15, hour, tzinfo=timezone.utc),
                     )
 
     def test_windows_zone_dst_ambiguity_and_explicit_offset(self):
         for stamp in ("2026-11-01T01:30:00", "2026-03-08T02:30:00"):
             with self.assertRaises(ValueError):
-                module.sales_timestamp(stamp, "Central Standard Time")
+                values.sales_timestamp(stamp, "Central Standard Time")
         self.assertEqual(
-            module.sales_timestamp("2026-11-01T01:30:00-05:00", "Central Standard Time"),
+            values.sales_timestamp("2026-11-01T01:30:00-05:00", "Central Standard Time"),
             datetime(2026, 11, 1, 6, 30, tzinfo=timezone.utc),
         )
 
@@ -278,7 +286,7 @@ class DailySalesSyncTests(unittest.TestCase):
         row["saleDateTime"] = "2026-09-29T12:00:00"
         row["salesPayments"][0]["paymentDate"] = "2026-09-29T12:00:00"
         self.client.request.return_value = response
-        module.sync_daily_sales(
+        daily_sales.sync_daily_sales(
             self.client, [uid(50)], "2026-09-29", "2026-09-29",
             {uid(50): "Central Standard Time"},
         )

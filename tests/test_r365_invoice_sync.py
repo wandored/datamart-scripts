@@ -1,4 +1,3 @@
-import importlib
 import io
 import unittest
 from contextlib import redirect_stdout
@@ -6,10 +5,10 @@ from decimal import Decimal
 from unittest.mock import Mock, patch
 from uuid import UUID
 
-from db_utils.r365_utils import R365Client
 from psycopg2 import sql
 
-module = importlib.import_module("src.r365-api-update")
+from db_utils.r365_utils import R365Client
+from src.r365_sync import invoice_details, invoices, writing
 
 
 def render_sql(node, context=None):
@@ -57,7 +56,7 @@ class InvoiceSyncTests(unittest.TestCase):
             {"invoices": [invoice()], "nextLink": "/next"},
             {"invoices": [invoice(2)]},
         ]
-        module.sync_invoices(self.client)
+        invoices.sync_invoices(self.client)
         self.assertEqual(self.client.request.call_count, 2)
         first = self.client.request.call_args_list[0]
         self.assertEqual(first.args, ("GET", "/v1/accounting/accounts-payable/invoices"))
@@ -89,7 +88,7 @@ class InvoiceSyncTests(unittest.TestCase):
         self.client.request.return_value = {"invoices": [invoice()]}
         self.execute.side_effect = [None, RuntimeError("detail write failed")]
         with self.assertRaisesRegex(RuntimeError, "detail write failed"):
-            module.sync_invoices(self.client)
+            invoices.sync_invoices(self.client)
         self.connection.rollback.assert_called_once()
         self.connection.commit.assert_not_called()
         self.assertNotIn("Upserted", self.output.getvalue())
@@ -98,24 +97,24 @@ class InvoiceSyncTests(unittest.TestCase):
         self.client.request.return_value = {"invoices": [invoice()]}
         self.connection.commit.side_effect = RuntimeError("commit failed")
         with self.assertRaisesRegex(RuntimeError, "commit failed"):
-            module.sync_invoices(self.client)
+            invoices.sync_invoices(self.client)
         self.assertNotIn("Upserted", self.output.getvalue())
 
     def test_empty_invoices_skip_database(self):
         self.client.request.return_value = {"invoices": []}
-        module.sync_invoices(self.client)
+        invoices.sync_invoices(self.client)
         self.connect.assert_not_called()
-        self.assertEqual(len(module.r365_invoice_details([]).columns), 11)
+        self.assertEqual(len(invoice_details.r365_invoice_details([]).columns), 11)
 
     def test_null_details_and_references(self):
         for details in (None, []):
-            self.assertTrue(module.r365_invoice_details([
+            self.assertTrue(invoice_details.r365_invoice_details([
                 {"id": str(UUID(int=1)), "details": details}
             ]).empty)
         row = {"id": str(UUID(int=1)), "details": [
             {"id": str(UUID(int=11)), "glAccount": None, "inventoryItem": {}, "uom": None}
         ]}
-        df = module.r365_invoice_details([row])
+        df = invoice_details.r365_invoice_details([row])
         self.assertEqual(df.iloc[0].tolist(), [UUID(int=11), UUID(int=1)] + [None] * 9)
 
     def test_missing_ids_fail_before_database(self):
@@ -124,21 +123,21 @@ class InvoiceSyncTests(unittest.TestCase):
             with self.subTest(row=row):
                 self.client.request.return_value = {"invoices": [row]}
                 with self.assertRaises(ValueError):
-                    module.sync_invoices(self.client)
+                    invoices.sync_invoices(self.client)
         self.connect.assert_not_called()
 
     def test_existing_header_only_and_standalone_writer(self):
         self.client.request.return_value = {"invoices": [invoice()]}
-        df = module.r365_invoices(self.client)
+        df = invoices.r365_invoices(self.client)
         self.assertEqual(self.client.request.call_count, 1)
         self.assertEqual(self.client.request.call_args.kwargs["params"]["IncludeDetails"], "false")
-        count = module.write_to_db(df, "invoices", "r365")
+        count = writing.write_to_db(df, "invoices", "r365")
         self.assertEqual(count, 1)
         self.connection.commit.assert_called_once()
         self.assertIn("Upserted 1 rows", self.output.getvalue())
 
     def test_supplied_empty_payload_does_not_refetch(self):
-        df = module.r365_invoices(self.client, invoices=[])
+        df = invoices.r365_invoices(self.client, invoices=[])
         self.assertTrue(df.empty)
         self.client.request.assert_not_called()
 

@@ -6,9 +6,9 @@ from unittest.mock import patch
 from uuid import UUID
 
 import pandas as pd
-import test_r365_invoice_sync as invoice_tests
 
-module = invoice_tests.module
+import test_r365_invoice_sync as invoice_tests
+from src.r365_sync import vendor_invoice_details, vendor_invoices
 
 
 def invoice(number=1):
@@ -36,7 +36,7 @@ class VendorInvoiceSyncTests(unittest.TestCase):
         self.client.request.side_effect = [
             {"items": [invoice()], "nextLink": "/next"}, {"items": [invoice(2)]},
         ]
-        module.sync_vendor_invoices(self.client)
+        vendor_invoices.sync_vendor_invoices(self.client)
         self.assertEqual(self.client.request.call_count, 2)
         first = self.client.request.call_args_list[0]
         self.assertEqual(first.args, ("GET", "/v1/inventory/invoices"))
@@ -70,10 +70,10 @@ class VendorInvoiceSyncTests(unittest.TestCase):
                     (datetime(2026, 9, 27, 15), "-04:00", "-04:00"),
                     (datetime(2026, 11, 1, 15), "-04:00", "-05:00"),
                 ):
-                    with patch.object(module, "datetime") as clock:
+                    with patch.object(vendor_invoices, "datetime") as clock:
                         clock.now.return_value = day
                         self.client.request.return_value = {"items": []}
-                        module.get_today_vendor_invoices(self.client)
+                        vendor_invoices.get_today_vendor_invoices(self.client)
                         clock.now.assert_called_once_with()
                     params = self.client.request.call_args.kwargs["params"]
                     self.assertEqual(params["modifiedOnStart"], f"{day.date()}T00:00:00{start_offset}")
@@ -84,17 +84,17 @@ class VendorInvoiceSyncTests(unittest.TestCase):
     def test_empty_payloads_skip_database(self):
         for payload in ({"items": []}, {"items": None}, {}):
             self.client.request.return_value = payload
-            module.sync_vendor_invoices(self.client)
+            vendor_invoices.sync_vendor_invoices(self.client)
         self.connect.assert_not_called()
-        self.assertEqual(len(module.r365_vendor_invoices(invoices=[]).columns), 15)
-        self.assertEqual(len(module.r365_vendor_invoice_details([]).columns), 10)
+        self.assertEqual(len(vendor_invoices.r365_vendor_invoices(invoices=[]).columns), 15)
+        self.assertEqual(len(vendor_invoice_details.r365_vendor_invoice_details([]).columns), 10)
 
     def test_zero_values_and_null_references(self):
         row = invoice()
         row.update(amount=0, location=None, vendor={}, purchaseOrder=None)
         row["details"] = [{"id": str(UUID(int=11)), "eachAmount": 0, "quantity": 0, "total": 0}]
         self.client.request.return_value = {"items": [row]}
-        module.sync_vendor_invoices(self.client)
+        vendor_invoices.sync_vendor_invoices(self.client)
         headers, details = self.execute.call_args_list
         self.assertEqual(headers.args[2][0][4], 0)
         self.assertEqual(headers.args[2][0][-3:], (None, None, None))
@@ -113,14 +113,14 @@ class VendorInvoiceSyncTests(unittest.TestCase):
                     self.client.request.return_value = {"items": [row]}
                     with self.subTest(scope=scope, field=field, value=value):
                         with self.assertRaisesRegex(ValueError, field):
-                            module.sync_vendor_invoices(self.client)
+                            vendor_invoices.sync_vendor_invoices(self.client)
         self.connect.assert_not_called()
 
     def test_null_details_write_headers_only(self):
         row = invoice()
         row["details"] = None
         self.client.request.return_value = {"items": [row]}
-        module.sync_vendor_invoices(self.client)
+        vendor_invoices.sync_vendor_invoices(self.client)
         self.execute.assert_called_once()
         self.connection.commit.assert_called_once()
 
@@ -128,7 +128,7 @@ class VendorInvoiceSyncTests(unittest.TestCase):
         self.client.request.return_value = {"items": [invoice()]}
         self.execute.side_effect = [None, RuntimeError("detail failed")]
         with self.assertRaisesRegex(RuntimeError, "detail failed"):
-            module.sync_vendor_invoices(self.client)
+            vendor_invoices.sync_vendor_invoices(self.client)
         self.connection.rollback.assert_called_once()
         self.connection.commit.assert_not_called()
         self.assertNotIn("Upserted", self.output.getvalue())

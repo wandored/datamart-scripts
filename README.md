@@ -27,11 +27,18 @@ Collection of utilities and scripts used to manage and update DataMart tables
 - scripts can be run from the command line using:
 python -m src.<script_name>
 
+### R365 API updates
+
+The [R365 updater guide](docs/r365-api-update.md) describes the table modules,
+daily/reference groups, and scheduling commands. The default run now enables all
+daily resources; reference tables are refreshed explicitly with `--sync reference`
+and a labor date range covering the last refresh.
+
 ### R365 employees, jobs, and users
 
-The regular `src.r365-api-update` run also syncs jobs and employees modified
-today (local time), plus all users. Employees are scoped to the locations returned
-by the locations API. To run only these syncs:
+The regular `src.r365-api-update` run syncs employees modified today (local time)
+and all users. Jobs belong to the explicitly selected reference group. Employees
+are scoped to the locations returned by the locations API. To run only these syncs:
 
 ```sh
 .venv/bin/python -m src.r365-api-update --sync jobs employees users

@@ -6,8 +6,7 @@ from unittest.mock import patch
 from uuid import UUID
 
 import test_r365_invoice_sync as invoice_tests
-
-module = invoice_tests.module
+from src.r365_sync import vendor_items
 
 
 def item():
@@ -30,11 +29,11 @@ class VendorItemsSyncTests(unittest.TestCase):
             {"items": [{"id": str(UUID(int=6)), "isPrimary": True}]},
             {"items": []},
         ]
-        module.sync_vendor_items(self.client, full_download=True)
+        vendor_items.sync_vendor_items(self.client, full_download=True)
         self.assertEqual(self.client.request.call_args_list[0].kwargs["params"], {"pageSize": 250})
         self.assertEqual(self.client.request.call_args_list[1].args, ("GET", "/next"))
         self.assertEqual(len(self.execute.call_args.args[2]), 2)
-        module.sync_vendor_items(self.client)
+        vendor_items.sync_vendor_items(self.client)
         params = self.client.request.call_args.kwargs["params"]
         self.assertIn("modifiedOnStart", params)
         self.assertIn("modifiedOnEnd", params)
@@ -44,7 +43,7 @@ class VendorItemsSyncTests(unittest.TestCase):
             {"items": [item()], "nextLink": "/next"},
             {"items": [{"id": str(UUID(int=6)), "isPrimary": True}]},
         ]
-        module.sync_vendor_items(self.client)
+        vendor_items.sync_vendor_items(self.client)
         self.assertEqual(self.client.request.call_count, 2)
         self.assertEqual(self.client.request.call_args_list[0].args, ("GET", "/v1/inventory/vendor-items"))
         self.assertEqual(self.client.request.call_args_list[1].args, ("GET", "/next"))
@@ -66,8 +65,8 @@ class VendorItemsSyncTests(unittest.TestCase):
     def test_empty_results_skip_connection(self):
         for payload in ({"items": []}, {"items": None}, {}):
             self.client.request.return_value = payload
-            module.sync_vendor_items(self.client)
-            self.assertEqual(len(module.r365_vendor_items(self.client).columns), 14)
+            vendor_items.sync_vendor_items(self.client)
+            self.assertEqual(len(vendor_items.r365_vendor_items(self.client).columns), 14)
         self.connect.assert_not_called()
 
     def test_required_id_and_boolean(self):
@@ -76,7 +75,7 @@ class VendorItemsSyncTests(unittest.TestCase):
                     *({"id": str(UUID(int=1)), "isPrimary": value} for value in (None, "false", 0))):
             self.client.request.return_value = {"items": [row]}
             with self.subTest(row=row), self.assertRaises(ValueError):
-                module.sync_vendor_items(self.client)
+                vendor_items.sync_vendor_items(self.client)
         self.connect.assert_not_called()
 
     def test_local_day_window_handles_dst(self):
@@ -84,9 +83,9 @@ class VendorItemsSyncTests(unittest.TestCase):
             with patch.dict(os.environ, {"TZ": "America/New_York"}):
                 time.tzset()
                 self.client.request.return_value = {"items": []}
-                with patch.object(module, "datetime") as clock:
+                with patch.object(vendor_items, "datetime") as clock:
                     clock.now.return_value = datetime(2026, 11, 1, 15)
-                    module.sync_vendor_items(self.client)
+                    vendor_items.sync_vendor_items(self.client)
                     clock.now.assert_called_once_with()
                 self.assertEqual(self.client.request.call_args.kwargs["params"], {
                     "modifiedOnStart": "2026-11-01T00:00:00-04:00",
@@ -99,7 +98,7 @@ class VendorItemsSyncTests(unittest.TestCase):
         self.client.request.return_value = {"items": [item()]}
         self.execute.side_effect = RuntimeError("write failed")
         with self.assertRaisesRegex(RuntimeError, "write failed"):
-            module.sync_vendor_items(self.client)
+            vendor_items.sync_vendor_items(self.client)
         self.connection.rollback.assert_called_once()
         self.connection.commit.assert_not_called()
         self.assertNotIn("Upserted", self.output.getvalue())
@@ -107,7 +106,7 @@ class VendorItemsSyncTests(unittest.TestCase):
     def test_api_failure_does_not_write(self):
         self.client.request.side_effect = RuntimeError("fetch failed")
         with self.assertRaisesRegex(RuntimeError, "fetch failed"):
-            module.sync_vendor_items(self.client)
+            vendor_items.sync_vendor_items(self.client)
         self.connect.assert_not_called()
 
 

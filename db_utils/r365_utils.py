@@ -1,6 +1,40 @@
 import requests
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 from db_utils.config import Config
+
+
+class R365ODataClient:
+    """Read OData pages without returning partial results on request failure."""
+
+    def __init__(self):
+        self.base_url = Config.SRVC_ROOT.rstrip("/") + "/"
+        self.session = requests.Session()
+        self.session.auth = (Config.SRVC_USER, Config.SRVC_PSWRD)
+        self.session.headers["Accept"] = "application/json"
+
+    def get_all(self, entity, params=None):
+        url = urljoin(self.base_url, entity)
+        visited = set()
+        while url:
+            # Continuation URLs must not receive credentials on another host.
+            if urlsplit(url).netloc != urlsplit(self.base_url).netloc or (
+                urlsplit(url).scheme != urlsplit(self.base_url).scheme
+            ):
+                raise ValueError("Unexpected OData continuation origin")
+            if url in visited:
+                raise ValueError("Repeated OData continuation link")
+            visited.add(url)
+            response = self.session.get(url, params=params, timeout=60)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict) or not isinstance(payload.get("value"), list):
+                raise ValueError("OData response requires a value array")
+            yield from payload["value"]
+            next_link = payload.get("@odata.nextLink")
+            if next_link is not None and not isinstance(next_link, str):
+                raise ValueError("Invalid OData continuation link")
+            url = urljoin(response.url, next_link) if next_link else None
+            params = None
 
 
 class R365Client:

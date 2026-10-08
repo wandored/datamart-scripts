@@ -3,8 +3,16 @@ from urllib.parse import urlparse, parse_qs
 
 
 # Accounting
-def get_invoices(client, start_date=None, end_date=None, include_details=False):
-    """Fetch invoices in an inclusive modification timestamp range."""
+def get_invoices(
+    client, start_date=None, end_date=None, include_details=False,
+    document_date_start=None, document_date_end=None,
+):
+    """Fetch invoices by modification timestamps or document dates."""
+    date_params = {}
+    if document_date_start is not None:
+        date_params["DateStart"] = str(document_date_start)
+    if document_date_end is not None:
+        date_params["DateEnd"] = str(document_date_end)
     return client.get_resource(
         "accounting",
         "accounts-payable/invoices",
@@ -13,6 +21,7 @@ def get_invoices(client, start_date=None, end_date=None, include_details=False):
         modifiedOnEnd=end_date,
         IncludeDetails="true" if include_details else "false",
         PageSize=250,
+        **date_params,
     )
 
 
@@ -31,6 +40,8 @@ def get_transactions(
     location_id,
     start_date=None,
     end_date=None,
+    business_date_start=None,
+    business_date_end=None,
 ):
     params = {
         "locationId": location_id,
@@ -38,12 +49,14 @@ def get_transactions(
         "modifiedOnEnd": end_date,
         "pageSize": 250,
     }
+    if business_date_start is not None:
+        params["dateOfBusinessStart"] = str(business_date_start)
+    if business_date_end is not None:
+        params["dateOfBusinessEnd"] = str(business_date_end)
 
     transactions = []
 
     while True:
-        print("REQUEST PARAMS:", params)
-
         response = client.request(
             "GET",
             "/v1/accounting/transactions",
@@ -53,8 +66,6 @@ def get_transactions(
         transactions.extend(response.get("transactions", []))
 
         next_link = response.get("nextLink")
-        print("NEXT LINK:", next_link)
-
         if not next_link:
             break
 
@@ -68,8 +79,6 @@ def get_transactions(
 
         while response.get("nextLink"):
             next_link = response["nextLink"]
-            print("NEXT LINK:", next_link)
-
             response = client.request(
                 "GET",
                 next_link,
@@ -154,8 +163,15 @@ def get_vendor_invoices(
     location_id=None,
     include_data="none",
     page_size=250,
+    date_start=None,
+    date_end=None,
 ):
     """Fetch inventory invoices with nested details; include_data is legacy."""
+    date_params = {}
+    if date_start is not None:
+        date_params["dateStart"] = str(date_start)
+    if date_end is not None:
+        date_params["dateEnd"] = str(date_end)
     return client.get_resource(
         "inventory",
         "invoices",
@@ -165,6 +181,7 @@ def get_vendor_invoices(
         status=status,
         locationIds=location_id,
         pageSize=page_size,
+        **date_params,
     )
 
 

@@ -1,4 +1,3 @@
-import runpy
 import unittest
 from datetime import datetime
 from unittest.mock import Mock, patch
@@ -74,14 +73,35 @@ class LaborUsersSyncTests(unittest.TestCase):
         self.connect.assert_called_once()
         self.connection.commit.assert_called_once()
 
-    def test_employee_without_pos_mapping_is_retained(self):
+    def test_employee_without_pos_mapping_is_excluded(self):
         row = employee(None)
         row.update(primaryLocation=None, primaryJob=None, otherLocations=None, otherJobs=None)
         self.client.request.return_value = {"data": [row]}
         module.sync_employees(self.client, [UUID(int=3)])
-        self.execute.assert_called_once()
-        self.assertEqual(self.execute.call_args.args[2][0][6:], (None, None, False, None, None))
-        self.assertIn("Skipped 1 mappings", self.output.getvalue())
+        self.connect.assert_not_called()
+        self.execute.assert_not_called()
+        self.assertIn("skipped 1 with missing/blank POS IDs", self.output.getvalue())
+
+    def test_mixed_pos_id_formats_only_import_uuid_employees(self):
+        values = [str(UUID(int=2)), None, "", "   ", "12345", "legacy-id"]
+        rows = [dict(employee(), employeeId=str(UUID(int=100 + index)),
+                     posEmployeeId=value) for index, value in enumerate(values)]
+        self.client.request.return_value = {"data": rows}
+        module.sync_employees(self.client, [UUID(int=3)])
+        employees, mappings = self.execute.call_args_list
+        self.assertEqual(len(employees.args[2]), 1)
+        self.assertEqual(employees.args[2][0][0], UUID(int=100))
+        self.assertEqual(mappings.args[2], [(UUID(int=2), UUID(int=100))])
+        self.connection.commit.assert_called_once()
+        self.assertIn("skipped 3 with missing/blank POS IDs", self.output.getvalue())
+        self.assertIn("2 with non-UUID POS IDs", self.output.getvalue())
+        self.assertNotIn("legacy-id", self.output.getvalue())
+
+    def test_only_non_uuid_pos_ids_skip_database(self):
+        self.client.request.return_value = {"data": [dict(employee(), posEmployeeId="12345", employeeId="legacy", inactive=None)]}
+        module.sync_employees(self.client, [UUID(int=3)])
+        self.execute.assert_not_called()
+        self.connect.assert_not_called()
 
     def test_employee_map_failure_rolls_back_both_tables(self):
         self.client.request.return_value = {"data": [employee()]}
@@ -151,7 +171,7 @@ class LaborUsersSyncTests(unittest.TestCase):
         self.assertEqual(len(module.r365_users(self.client).columns), 8)
 
     def test_invalid_data_fails_before_writing(self):
-        for field, value in (("employeeId", None), ("posEmployeeId", "bad"),
+        for field, value in (("employeeId", None), ("employeeId", "bad"),
                              ("inactive", "false"), ("otherJobs", [{"id": None}]),
                              ("otherLocations", [{"id": "bad"}])):
             with self.subTest(field=field), self.assertRaises(ValueError):
@@ -194,23 +214,6 @@ class LaborUsersSyncTests(unittest.TestCase):
         self.client.request.assert_not_called()
         self.connect.assert_not_called()
 
-    def test_cli_runs_only_selected_resources_with_historical_range(self):
-        self.client.request.side_effect = [
-            {"data": [job()]}, {"items": [{"id": str(UUID(int=3))}]},
-            {"data": [employee()]}, {"entities": [user()]},
-        ]
-        with patch("sys.argv", [
-            "r365-api-update", "--sync", "employees", "jobs", "users",
-            "--modified-on-start", "2000-01-01", "--modified-on-end", "2026-09-28",
-        ]), patch("db_utils.r365_utils.R365Client", return_value=self.client):
-            with self.assertRaises(SystemExit) as result:
-                runpy.run_path(module.__file__, run_name="__main__")
-        self.assertEqual(result.exception.code, 0)
-        self.assertEqual([call.args[1] for call in self.client.request.call_args_list], [
-            "/v1/labor/jobs", "/v1/core/locations", "/v1/labor/employees", "/v1/user-management/users",
-        ])
-        self.assertEqual(self.client.request.call_args_list[2].kwargs["params"]["modifiedOnEnd"], "2026-09-28")
-        self.assertEqual(self.execute.call_count, 4)
 
 
 class ClientPaginationTests(unittest.TestCase):

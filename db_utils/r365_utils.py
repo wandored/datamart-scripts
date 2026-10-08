@@ -1,4 +1,5 @@
 import requests
+import time
 from urllib.parse import urlsplit
 from db_utils.config import Config
 
@@ -30,13 +31,28 @@ class R365Client:
             else:
                 url = f"{self.base_url}{endpoint}"
 
-        response = self.session.request(
-            method=method,
-            url=url,
-            params=params,
-            json=json,
-            timeout=60,
-        )
+        # Retry only reads, including continuation pages, without restarting the
+        # complete download. Never retry a potentially successful write.
+        attempts = 3 if method.upper() == "GET" else 1
+        for attempt in range(attempts):
+            try:
+                response = self.session.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    json=json,
+                    timeout=60,
+                )
+                break
+            except requests.Timeout:
+                if attempt == attempts - 1:
+                    raise
+                delay = 2 ** (attempt + 1)
+                print(
+                    f"R365 GET timed out; retrying the same page in {delay}s "
+                    f"(attempt {attempt + 2}/{attempts})."
+                )
+                time.sleep(delay)
 
         response.raise_for_status()
 

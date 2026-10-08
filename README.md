@@ -27,32 +27,77 @@ Collection of utilities and scripts used to manage and update DataMart tables
 - scripts can be run from the command line using:
 python -m src.<script_name>
 
+### R365 sync modes
+
+```sh
+.venv/bin/python -m src.r365-api-update daily
+.venv/bin/python -m src.r365-api-update weekly
+.venv/bin/python -m src.r365-api-update bulk --year 2026 --period 9 --tables daily_sales
+.venv/bin/python -m src.r365-api-update bulk --year 2026 --period 9 --week 5 --tables daily_sales vendor_invoices
+.venv/bin/python -m src.r365-api-update bulk --year 2026 --period 7 8 9 --tables daily_sales inventory_counts
+```
+
+An explicit mode is required. These commands replace the old resource flags and
+manual date arguments; update scheduled commands accordingly.
+
+- `daily` imports the fiscal week containing **yesterday**, from that week's first
+  date through yesterday inclusive. It reads `year`, `period`, and `week` from `core.calendar`,
+  using the runtime's local date. On fiscal day 1, it imports the previous fiscal
+  week's days 1–7; on day 4, it imports the current week's days 1–3.
+- `weekly` refreshes locations, units of measure, item categories, GL accounts,
+  purchase items, vendors, vendor items, jobs, employees (with POS mappings), and
+  users. Modification/creation timestamps and employee hire dates do not make
+  these reference records daily data. Jobs and employees require API date filters;
+  the refresh requests modification dates from `0001-01-01` through today.
+  Employees are scoped to all locations returned by the locations API.
+- `bulk` imports only the required `--tables` selection for fiscal `year` and one
+  or more `period` values. Choose one or more of `daily_sales`, `inventory_counts`,
+  `transactions`, and `vendor_invoices`; there is no default selection.
+  Add `--week` to select a week within a single period. Week numbers restart within each
+  period: usually 1–4, with week 5 when present in `core.calendar`. For example,
+  fiscal year 2026 period 9 has five weeks; its other twelve periods have four.
+  Dates are read from `core.calendar`; unselected periods and calendar gaps are
+  never filled in. A selection with no matching dates fails before API calls.
+
+Daily imports all dated tables; bulk selects from the same groups: daily sales and their child tables,
+including sales accounts, inventory counts, transactions, and vendor invoices
+and their details. All use inclusive record-date
+filters, not modification dates: sales/counts/transactions use business dates,
+and vendor invoices use invoice dates. Reference
+records embedded in sales responses are kept with their sales sync.
+
+The API date filters follow the R365 documentation for
+[transactions](https://docs.restaurant365.com/apidocs/public-v1-accounting-transactions),
+[vendor invoices](https://docs.restaurant365.com/apidocs/public-v1-inventory-invoices), and
+[jobs](https://docs.restaurant365.com/apidocs/public-v1-labor-jobs).
+Older corrections outside the daily fiscal window require a bulk rerun.
+
+R365 GET requests retry timeouts twice, after 2 and 4 seconds, keeping the
+60-second timeout per attempt. Continuation retries request the same page;
+exhausted retries raise the error. Vendor invoices and their details are written
+only after all pages are fetched. Earlier successful table updates remain
+committed. To retry just vendor invoices for September 30–October 6, 2026:
+
+```sh
+.venv/bin/python -m src.r365-api-update bulk \
+  --year 2026 --period 10 --week 4 --tables vendor_invoices
+```
+
+Accounting `invoices` and `invoice_details` updates are commented out in the
+dispatcher and excluded from bulk choices. Their import functions remain available
+for future reactivation; use `vendor_invoices` and `vendor_invoice_details` for
+new views. Existing database tables and data are unchanged.
+
 ### R365 employees, jobs, and users
-
-The regular `src.r365-api-update` run also syncs jobs and employees modified
-today (local time), plus all users. Employees are scoped to the locations returned
-by the locations API. To run only these syncs:
-
-```sh
-.venv/bin/python -m src.r365-api-update --sync jobs employees users
-```
-
-For an initial load or a missed date range, supply **both** labor date boundaries:
-
-```sh
-.venv/bin/python -m src.r365-api-update --sync jobs employees users \
-  --modified-on-start 2000-01-01 --modified-on-end 2026-09-28
-```
-
-Choose dates covering the required history through the current day. A single
-boundary selects only that day. Date filters apply to employees and jobs; users
-are always fetched in full. All three endpoints are paginated.
 
 These syncs upsert existing tables; they do not create or alter schemas or delete
 records absent from the response. Employees use `id` as their primary key and
 UUID arrays for `other_locations_id` and `other_jobs_id`. POS mappings are written
 to `r365.employee_map` using `pos_employee_id` as the conflict key, in the same
-transaction as employees. Missing POS IDs skip only the mapping. Duplicate
+transaction as employees. Employee records with missing, blank, or non-UUID POS IDs belong to the archived
+POS system and are excluded from both employee and mapping imports, with counts
+reported. Existing database rows are not deleted. R365 defines `posEmployeeId` as a string, but the
+existing `employee_map.pos_employee_id` column accepts UUIDs only. Duplicate
 employee rows with identical mapped values are combined; conflicting values
 raise an error before writing.
 
@@ -116,32 +161,17 @@ servers are stored only as IDs; server names, payroll IDs, location names/number
 and free-text ticket comments are excluded from this import. No raw payload is
 stored. Existing employee/location imports are unchanged.
 
-```sh
-.venv/bin/python -m src.r365-api-update --sync daily-sales
-.venv/bin/python -m src.r365-api-update --sync daily-sales \
-  --business-date-start 2026-09-01 --business-date-end 2026-09-29
-```
-
-The regular update also runs daily sales. The default window is the previous
-seven completed dates according to the runtime's local calendar. Both daily-sales
-entry points select locations from `core.restaurants` where `active IS TRUE`
-and `r365_guid IS NOT NULL`, using `r365_guid` as the API location ID and the
-restaurant's `timezone` for timestamp conversion. The R365 locations API does not
-determine which restaurants receive daily-sales requests. A single date
-boundary selects one day. These are business-date filters, separate from the
-existing labor modification-date arguments. Older corrections require an explicit
-rerun of their business dates. No automatic retention cutoff deletes old data.
-To backfill two completed years as of September 30, 2026 (adjust dates when running):
-
-```sh
-.venv/bin/python -m src.r365-api-update --sync daily-sales \
-  --business-date-start 2024-09-30 --business-date-end 2026-09-29
-```
+Daily and bulk sales select locations from `core.restaurants` where
+`active IS TRUE` and `r365_guid IS NOT NULL`, using `r365_guid` as the API location
+ID and the restaurant's `timezone` for timestamp conversion. The R365 locations
+API does not determine which restaurants receive daily-sales requests.
+No automatic retention cutoff deletes old data. Use the fiscal bulk commands
+above to backfill historical periods.
 
 The backfill still requests full tickets from R365 but stores their item totals
 at the daily grain. It processes only currently active restaurants; historical
 closed restaurants are not selected. Missing API days are reported as skipped,
-so a requested two-year range does not guarantee R365 supplies every day.
+so a requested fiscal range does not guarantee R365 supplies every day.
 
 Each location/day is fully fetched and validated before one transaction upserts
 the summary and children. A repeated summary across pages is stored once.

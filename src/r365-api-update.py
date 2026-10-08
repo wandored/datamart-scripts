@@ -17,6 +17,9 @@ from db_utils.r365_importers import (
     get_daily_sales_pages,
 )
 from db_utils.dbconnect import DatabaseConnection
+from db_utils.r365_csv_importers import (
+    get_recipe_items_csv, get_ingredients_csv, INGREDIENT_KEYS,
+)
 from psycopg2 import sql
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -1545,6 +1548,10 @@ def sync_daily_tables(client, start, end, tables=DAILY_TABLES):
 
 def sync_weekly_tables(client):
     """Refresh reference data; creation/modification dates do not make it daily data."""
+    # Validate both local exports before starting any weekly writes/API requests.
+    recipe_items = get_recipe_items_csv()
+    ingredients = get_ingredients_csv()
+    sync_recipe_tables(recipe_items, ingredients)
     locations = r365_locations(client)
     write_to_db(locations, "locations", "r365")
     for table, fetch in (
@@ -1562,6 +1569,17 @@ def sync_weekly_tables(client):
     sync_jobs(client, start, end)
     sync_employees(client, locations["id"].to_list(), start, end)
     sync_users(client)
+
+
+def sync_recipe_tables(recipe_items, ingredients):
+    """Upsert normalized recipe data independently of its CSV/API source."""
+    with DatabaseConnection() as db:
+        recipe_count = write_to_db(recipe_items, "recipe_items", "r365", db=db)
+        ingredient_count = write_to_db(
+            ingredients, "ingredients", "r365", db=db, conflict_columns=INGREDIENT_KEYS
+        )
+    print(f"Recipe items fetched/upserted={recipe_count:,}; "
+          f"ingredients fetched/upserted={ingredient_count:,}.")
 
 
 def main(argv=None):

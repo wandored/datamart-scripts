@@ -1324,8 +1324,24 @@ def sync_daily_sales(
             with DatabaseConnection() as db:
                 # The header upsert locks this summary until all children are committed.
                 counts["daily_sales"] = write_to_db(
-                    summary, "daily_sales", "r365", db=db
+                    summary, "daily_sales", "r365", db=db,
+                    conflict_columns=("location_id", "business_date"),
+                    preserve_columns=("id",),
                 )
+                # R365 can regenerate the source summary ID for the same day.
+                # Keep the stored ID and use it for both new and existing children.
+                db.execute(
+                    "SELECT id FROM r365.daily_sales WHERE location_id = %s AND business_date = %s",
+                    (UUID(str(location_id)), business_date),
+                )
+                stored_summary_id = db.fetchone()["id"]
+                if stored_summary_id != summary_id:
+                    print(
+                        f"Daily sales {location_id} {business_date}: source summary ID changed; "
+                        "retaining stored summary ID for child references."
+                    )
+                summary_id = stored_summary_id
+                frames["sales_tickets"]["daily_sales_id"] = summary_id
                 db.execute(
                     """
                     UPDATE r365.sales_details SET is_current = false
@@ -1373,7 +1389,8 @@ def sync_daily_sales(
 
 
 def write_to_db(
-    df: pd.DataFrame, table_name: str, schema: str, db=None, conflict_columns=("id",)
+    df: pd.DataFrame, table_name: str, schema: str, db=None, conflict_columns=("id",),
+    preserve_columns=(),
 ):
     """Upsert rows; a supplied connection's caller owns commit and reporting."""
     if not schema:
@@ -1395,7 +1412,10 @@ def write_to_db(
 
         columns = [sql.Identifier(col) for col in df.columns]
 
-        update_columns = [col for col in df.columns if col not in conflict_columns]
+        update_columns = [
+            col for col in df.columns
+            if col not in conflict_columns and col not in preserve_columns
+        ]
 
         update_sql = sql.SQL(", ").join(
             sql.SQL("{} = EXCLUDED.{}").format(

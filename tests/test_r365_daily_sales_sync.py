@@ -49,7 +49,9 @@ def not_found():
 
 
 class DailySalesSyncTests(unittest.TestCase):
-    setUp = invoice_tests.InvoiceSyncTests.setUp
+    def setUp(self):
+        invoice_tests.InvoiceSyncTests.setUp(self)
+        self.connection.cursor.return_value.fetchone.return_value = {"id": UUID(int=1)}
 
     def sync(self):
         module.sync_daily_sales(self.client, [uid(50)], "2026-09-29", "2026-09-29")
@@ -107,7 +109,22 @@ class DailySalesSyncTests(unittest.TestCase):
         for forbidden in ("DO NOT STORE", "PRIVATE", "OMIT LOCATION", "server_name",
                           "server_payroll_id", "location_name", "location_number", '"comment"'):
             self.assertNotIn(forbidden, written)
-        self.assertEqual(self.connection.cursor.return_value.execute.call_count, 4)
+        self.assertEqual(self.connection.cursor.return_value.execute.call_count, 5)
+
+    def test_regenerated_summary_uses_stored_id_for_tickets_and_reconciliation(self):
+        response = page()
+        response["data"]["id"] = uid(999)
+        self.client.request.return_value = response
+        self.sync()
+        header, tickets = self.execute.call_args_list[:2]
+        self.assertIn('ON CONFLICT ("location_id", "business_date")', header.args[1])
+        self.assertNotIn('"id" = EXCLUDED."id"', header.args[1])
+        self.assertEqual(header.args[2][0][0], UUID(int=999))
+        self.assertEqual(tickets.args[2][0][1], UUID(int=1))
+        # Payment, tax, and ticket inactivation all target the existing parent.
+        for query in self.connection.cursor.return_value.execute.call_args_list[-3:]:
+            self.assertEqual(query.args[1], (UUID(int=1),))
+        self.assertIn("source summary ID changed", self.output.getvalue())
 
     def test_first_page_404_skips_but_continuation_404_fails_without_writes(self):
         self.client.request.side_effect = not_found()
@@ -160,7 +177,7 @@ class DailySalesSyncTests(unittest.TestCase):
         self.client.request.return_value = page([])
         self.sync()
         self.assertEqual(self.execute.call_count, 1)
-        self.assertEqual(self.connection.cursor.return_value.execute.call_count, 4)
+        self.assertEqual(self.connection.cursor.return_value.execute.call_count, 5)
         self.connection.commit.assert_called_once()
 
     def test_null_arrays_and_nullable_identifiers_keep_explicit_columns(self):

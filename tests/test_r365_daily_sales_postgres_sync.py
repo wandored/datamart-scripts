@@ -64,9 +64,19 @@ class DailySalesPostgresTests(unittest.TestCase):
         connection.commit()
 
         # A partial correction overwrites totals instead of adding to them.
-        sync(page([first]))
+        regenerated = page([first])
+        regenerated["data"]["id"] = uid(999)
+        sync(regenerated)
+        sync(regenerated)
+        self.assertEqual(counts("sales_tickets"), (2, 1))
+        self.assertEqual(counts("sales_payments"), (2, 1))
+        self.assertEqual(counts("sales_ticket_taxes"), (3, 2))
         self.assertEqual(counts("sales_details"), (1, 1))
         with connection.cursor() as cur:
+            cur.execute("SELECT id FROM r365.daily_sales")
+            self.assertEqual([str(row[0]) for row in cur.fetchall()], [uid(1)])
+            cur.execute("SELECT DISTINCT daily_sales_id FROM r365.sales_tickets")
+            self.assertEqual([str(row[0]) for row in cur.fetchall()], [uid(1)])
             cur.execute("SELECT sale_amount FROM r365.sales_details WHERE is_current")
             self.assertEqual(float(cur.fetchone()[0]), 10.25)
         connection.commit()
@@ -98,6 +108,7 @@ class DailySalesPostgresTests(unittest.TestCase):
         invalid = copy.deepcopy(changed)
         invalid["taxDetail"][0]["rate"] = 2
         bad_page = page([invalid])
+        bad_page["data"]["id"] = uid(998)
         bad_page["data"]["netSales"] = 999
         with self.assertRaises(psycopg2.errors.CheckViolation):
             sync(bad_page)

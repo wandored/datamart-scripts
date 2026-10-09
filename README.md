@@ -175,6 +175,10 @@ so a requested fiscal range does not guarantee R365 supplies every day.
 
 Each location/day is fully fetched and validated before one transaction upserts
 the summary and children. A repeated summary across pages is stored once.
+Summaries are upserted by `(location_id, business_date)`. If R365 regenerates a
+summary with a different UUID, the existing stored summary ID is retained to
+preserve references. Incoming tickets and child reconciliation use that stored
+ID; summary values and daily item totals are updated from the new response.
 Incomplete or conflicting pages fail before writes; a failed write rolls back
 the entire location/day. Earlier successful location/days remain committed.
 An initial 404 skips that location/day without changing stored rows: R365 does

@@ -49,7 +49,9 @@ def not_found():
 
 
 class DailySalesSyncTests(unittest.TestCase):
-    setUp = invoice_tests.InvoiceSyncTests.setUp
+    def setUp(self):
+        invoice_tests.InvoiceSyncTests.setUp(self)
+        self.connection.cursor.return_value.fetchone.return_value = {"id": UUID(int=1)}
 
     def sync(self):
         module.sync_daily_sales(self.client, [uid(50)], "2026-09-29", "2026-09-29")
@@ -107,7 +109,35 @@ class DailySalesSyncTests(unittest.TestCase):
         for forbidden in ("DO NOT STORE", "PRIVATE", "OMIT LOCATION", "server_name",
                           "server_payroll_id", "location_name", "location_number", '"comment"'):
             self.assertNotIn(forbidden, written)
-        self.assertEqual(self.connection.cursor.return_value.execute.call_count, 4)
+        self.assertEqual(self.connection.cursor.return_value.execute.call_count, 6)
+
+    def test_changed_summary_id_deletes_old_snapshot_and_uses_new_identity(self):
+        response = page()
+        response["data"]["id"] = uid(99)
+        self.client.request.return_value = response
+        self.sync()
+        header, tickets, *_ = self.execute.call_args_list
+        self.assertIn('ON CONFLICT ("id")', header.args[1])
+        self.assertEqual(header.args[2][0][0], UUID(int=99))
+        self.assertEqual(tickets.args[2][0][1], UUID(int=99))
+        statements = self.connection.cursor.return_value.execute.call_args_list
+        deletes = statements[2:7]
+        for statement, table in zip(deletes, ("sales_payments", "sales_ticket_taxes", "sales_details", "sales_tickets", "daily_sales")):
+            self.assertIn("DELETE FROM", str(statement.args[0]))
+            self.assertIn(table, str(statement.args[0]))
+            expected = (UUID(int=50), date(2026, 9, 29)) if table == "sales_details" else (UUID(int=1),)
+            self.assertEqual(statement.args[1], expected)
+        for statement in statements[-3:]:
+            self.assertEqual(statement.args[1], (UUID(int=99),))
+        self.assertIn("replaced summary", self.output.getvalue())
+        self.connection.commit.assert_called_once()
+
+    def test_first_summary_does_not_delete(self):
+        self.connection.cursor.return_value.fetchone.return_value = None
+        self.client.request.return_value = page()
+        self.sync()
+        statements = self.connection.cursor.return_value.execute.call_args_list
+        self.assertFalse(any("DELETE FROM" in str(call.args[0]) for call in statements))
 
     def test_first_page_404_skips_but_continuation_404_fails_without_writes(self):
         self.client.request.side_effect = not_found()
@@ -160,7 +190,7 @@ class DailySalesSyncTests(unittest.TestCase):
         self.client.request.return_value = page([])
         self.sync()
         self.assertEqual(self.execute.call_count, 1)
-        self.assertEqual(self.connection.cursor.return_value.execute.call_count, 4)
+        self.assertEqual(self.connection.cursor.return_value.execute.call_count, 6)
         self.connection.commit.assert_called_once()
 
     def test_null_arrays_and_nullable_identifiers_keep_explicit_columns(self):

@@ -2,12 +2,13 @@ import io
 import sqlite3
 import unittest
 from contextlib import ExitStack, redirect_stderr
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import Mock, patch
 
 from test_r365_invoice_sync import module
 from db_utils.r365_importers import get_invoices, get_transactions, get_vendor_invoices
 from db_utils.r365_utils import R365Client
+from db_utils import fiscal_calendar
 
 
 class SyncCliTests(unittest.TestCase):
@@ -56,7 +57,7 @@ class SyncCliTests(unittest.TestCase):
                 rows = [{"date": date.fromordinal(day)} for day in
                         range(first.toordinal(), last.toordinal() + 1)]
                 db = self.calendar(rows)
-                self.assertEqual(module.daily_fiscal_date_range(), (first, last))
+                self.assertEqual(fiscal_calendar.fiscal_week_to_date(today=module.date.today(), connection_factory=module.DatabaseConnection), (first, last))
                 self.assertEqual(db.execute.call_args.args[1], (last, last))
                 self.assertIn("SELECT year, period, week", db.execute.call_args.args[0])
 
@@ -97,7 +98,7 @@ class SyncCliTests(unittest.TestCase):
             ):
                 with self.subTest(today=today):
                     clock.today.return_value = today
-                    self.assertEqual(module.daily_fiscal_date_range(), (first, last))
+                    self.assertEqual(fiscal_calendar.fiscal_week_to_date(today=module.date.today(), connection_factory=module.DatabaseConnection), (first, last))
 
     def test_daily_missing_calendar_and_gap_fail(self):
         for rows in ([], [{"date": date(2026, 1, 5)}, {"date": date(2026, 1, 7)}]):
@@ -105,13 +106,12 @@ class SyncCliTests(unittest.TestCase):
                 dates.today.return_value = date(2026, 1, 8)
                 self.calendar(rows)
                 with self.assertRaises(ValueError):
-                    module.daily_fiscal_date_range()
+                    fiscal_calendar.fiscal_week_to_date(today=module.date.today(), connection_factory=module.DatabaseConnection)
 
     def test_invalid_cli_fails_before_database_or_api(self):
         cases = [[], ["daily", "--year", "2026"], ["weekly", "--week", "1"],
-                 ["bulk", "--year", "2026", "--period", "9"],
+                 ["--period", "9"], ["--daily", "--weekly"],
                  ["bulk", "--year", "2026", "--period", "0", "--tables", "daily_sales"],
-                 ["bulk", "--year", "2026", "--period", "9", "--tables", "jobs"],
                  ["bulk", "--year", "2026", "--period", "9", "--tables", "invoices"],
                  ["bulk", "--year", "2026", "--period", "9", "10", "--week", "5",
                   "--tables", "daily_sales"]]
@@ -133,18 +133,22 @@ class SyncCliTests(unittest.TestCase):
                 patch.object(module, "sync_weekly_tables") as weekly:
             module.main(["bulk", "--year", "2026", "--period", "7", "9",
                          "--tables", "daily_sales", "vendor_invoices"])
-        self.assertEqual(sync.call_count, 2)
-        for call, (start, end) in zip(sync.call_args_list, ranges):
-            self.assertEqual(call.args, (client.return_value, start, end, ["daily_sales", "vendor_invoices"]))
+        days = [start + timedelta(days=i) for start, end in ranges
+                for i in range((end - start).days + 1)]
+        self.assertEqual(sync.call_count, len(days))
+        for call, day in zip(sync.call_args_list, days):
+            self.assertEqual(call.args, (client.return_value, day, day, ["daily_sales", "vendor_invoices"]))
         weekly.assert_not_called()
 
-    def test_daily_dispatches_all_tables_using_fiscal_range(self):
-        bounds = (date(2026, 1, 5), date(2026, 1, 7))
-        with patch.object(module, "daily_fiscal_date_range", return_value=bounds), \
+    def test_daily_dispatches_all_tables_for_yesterday(self):
+        bounds = (date(2026, 1, 7), date(2026, 1, 7))
+        with patch.object(fiscal_calendar, "daily_date_range", return_value=bounds), \
                 patch.object(module, "R365Client") as client, \
-                patch.object(module, "sync_daily_tables") as sync:
+                patch.object(module, "get_locations", return_value=[{"id": "unchanged"}]), \
+                patch.object(module, "sync_modified_tables") as sync:
             module.main(["daily"])
-        sync.assert_called_once_with(client.return_value, *bounds, module.DAILY_TABLES)
+        sync.assert_called_once_with(client.return_value, bounds[0],
+                                     [*module.REFERENCE_TABLES, *module.DAILY_TABLES], ["unchanged"])
 
     def test_selected_tables_do_not_fetch_or_write_other_resources(self):
         names = ["sync_daily_sales", "r365_inventory_counts", "r365_transactions",
@@ -159,7 +163,7 @@ class SyncCliTests(unittest.TestCase):
             for name in names[1:4] + names[5:]:
                 mocks[name].assert_not_called()
 
-    def test_weekly_full_reference_refresh_excludes_daily(self):
+    def test_reference_refresh_includes_all_reference_endpoints(self):
         names = ["r365_locations", "r365_units_of_measure", "r365_item_categories",
                  "r365_gl_accounts", "r365_purchase_items", "r365_vendors",
                  "sync_vendor_items", "sync_jobs", "sync_employees", "sync_users",
@@ -167,8 +171,8 @@ class SyncCliTests(unittest.TestCase):
         with ExitStack() as stack:
             mocks = {name: stack.enter_context(patch.object(module, name)) for name in names}
             mocks["r365_locations"].return_value = module.pd.DataFrame({"id": ["location"]})
-            module.main(["weekly"])
             client = mocks["R365Client"].return_value
+            module.sync_weekly_tables(client)
             mocks["sync_jobs"].assert_called_once_with(client, "0001-01-01", date.today().isoformat())
             mocks["sync_employees"].assert_called_once_with(
                 client, ["location"], "0001-01-01", date.today().isoformat())

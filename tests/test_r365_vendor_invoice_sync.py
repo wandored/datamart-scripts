@@ -40,7 +40,8 @@ class VendorInvoiceSyncTests(unittest.TestCase):
         self.assertEqual(self.client.request.call_count, 2)
         first = self.client.request.call_args_list[0]
         self.assertEqual(first.args, ("GET", "/v1/inventory/invoices"))
-        self.assertEqual(first.kwargs["params"]["pageSize"], 250)
+        self.assertEqual(first.kwargs["params"]["pageSize"], 50)
+        self.assertEqual(first.kwargs["timeout"], (15, 180))
         self.assertNotIn("dateStart", first.kwargs["params"])
         self.assertNotIn("IncludeDetails", first.kwargs["params"])
         self.assertEqual(self.client.request.call_args_list[1].args, ("GET", "/next"))

@@ -6,6 +6,7 @@ from unittest.mock import Mock, call, patch
 import requests
 
 from db_utils.r365_utils import R365Client
+from db_utils.r365_importers import get_vendor_invoices
 from test_r365_invoice_sync import module
 
 
@@ -72,6 +73,30 @@ class ClientTimeoutTests(unittest.TestCase):
                     self.client.request(method, '/v1/resource', json={'value': 1})
                 self.client.session.request.assert_called_once()
         self.sleep.assert_not_called()
+
+    def test_invoice_timeout_and_small_pages_persist_through_continuation_retries(self):
+        self.client.session.request.side_effect = [
+            response({'items': [1], 'nextLink': '/public/next?continuationToken=private'}),
+            requests.ReadTimeout(), response({'items': [2]}),
+        ]
+        self.assertEqual(get_vendor_invoices(
+            self.client, modified_on_start='2026-10-07T00:00:00-04:00',
+            modified_on_end='2026-10-07T23:59:59.999999-04:00',
+        ), [1, 2])
+        calls = self.client.session.request.call_args_list
+        self.assertEqual(calls[0].kwargs['params']['pageSize'], 50)
+        self.assertEqual(calls[0].kwargs['params']['modifiedOnStart'], '2026-10-07T00:00:00-04:00')
+        self.assertNotIn('request_timeout', calls[0].kwargs['params'])
+        for attempt in calls:
+            self.assertEqual(attempt.kwargs['timeout'], (15, 180))
+        self.assertIsNone(calls[1].kwargs['params'])
+        self.assertEqual(calls[1], calls[2])
+        self.assertNotIn('private', self.output.getvalue())
+
+    def test_other_endpoints_keep_default_timeout(self):
+        self.client.session.request.return_value = response({'items': []})
+        self.client.get_resource('core', 'locations')
+        self.assertEqual(self.client.session.request.call_args.kwargs['timeout'], 60)
 
     def test_http_errors_are_not_treated_as_timeouts(self):
         result = response({})

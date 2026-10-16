@@ -2,10 +2,12 @@
 
 Apply `db_utils/schema/toast_orders.sql` explicitly to the intended database.
 The [complete table definitions](../db_utils/schema/toast_orders.sql) create all
-seven Orders tables if absent and add `orders.last_synced_at` to the previous
+six Orders tables if absent and add `orders.last_synced_at` to the previous
 header-only table. Existing order columns and types are preserved, including
 `calculated_guest_count NUMERIC` and the established required `business_date`.
 No tables are replaced and no foreign keys are added. The updater performs no DDL.
+Existing installations must also apply the [configuration migration](toast-configuration.md)
+to add the configured service-charge tax link and retire the old application table.
 Old order rows initially receive the migration time as `last_synced_at`; re-fetch
 their business dates before using that timestamp to reconcile children.
 
@@ -16,7 +18,6 @@ their business dates before using that timestamp to reconcile children.
 | selections | Item or modifier; `id = guid`, UUID PK | check_id, order_id, restaurant_id, parent_selection_id |
 | payments | Payment; `id = guid`, UUID PK | check_id, order_id, restaurant_id |
 | applied_discounts | Discount application; `id = guid`, UUID PK | check_id, order_id, restaurant_id; nullable selection_id |
-| service_charges | Service-charge application; `id = guid`, UUID PK | check_id, order_id, restaurant_id |
 | applied_taxes | Tax application; `id = guid`, UUID PK | check_id, order_id, restaurant_id; exactly one of selection_id/service_charge_id |
 
 All tables carry the order's `business_date` and a UTC `last_synced_at` observation
@@ -47,7 +48,7 @@ reused. Pages contain at most 100 orders; a full page triggers another request
 even if the Link header is absent. All pages must succeed before that day's rows
 are written. Empty days succeed and leave stored data unchanged.
 
-`src/toast_sync/orders.py` retrieves and normalizes all seven tables; the shared
+`src/toast_sync/orders.py` retrieves and normalizes all six tables; the shared
 `src/toast_sync/writing.py` bulk-upserts by `id` using `DatabaseConnection`.
 Each restaurant/day is one transaction across every table, with no deletes or truncation. Repeat
 runs update existing GUIDs. Voided, deleted, test-mode, and excess-food orders
@@ -148,12 +149,15 @@ separate configuration reference. Amount, percentage, non-tax amount, processing
 state, promo code, approver, and applied reason are retained. Combo/trigger arrays
 and loyalty-account details are not represented in this first normalized set.
 
-[AppliedServiceCharge](https://doc.toasttab.com/openapi/orders/tag/Data-definitions/schema/AppliedServiceCharge/)
-has its own GUID. `service_charges.service_charge_id` references the configured
-charge, while `applied_taxes.service_charge_id` references the application row.
-The applied object provides no percentage/rate field, so no rate is inferred.
-Amount, type, calculation/category, gratuity/taxable/dining flags, payment link,
-and refund details are retained.
+Service-charge applications are no longer stored as a separate Orders table.
+`toast.service_charges` now stores Configuration API definitions. Apply the
+[configuration migration](toast-configuration.md) when upgrading an existing
+installation. It backfills `applied_taxes.configured_service_charge_id` before
+removing the old application table. New Orders syncs retain service-charge taxes:
+`applied_taxes.service_charge_id` remains the source application GUID, while
+`configured_service_charge_id` joins to `toast.service_charges.id` together with
+restaurant_id. Application amounts, flags, payment links, and refund details are
+no longer stored. Selection taxes have NULL configured_service_charge_id.
 
 [AppliedTaxRate](https://doc.toasttab.com/openapi/orders/tag/Data-definitions/schema/AppliedTaxRate/)
 is shared by selections and service charges. Its required application GUID is
@@ -200,7 +204,7 @@ potentially stale children rather than summing the historical tables blindly.
 Optional PostgreSQL tests use the same fresh isolated `/tmp/toast-restaurants-pg-*`
 socket setup described in `toast-api-update.md`, enabled by `TOAST_TEST_PG_SOCKET`.
 They exercise additive upgrades, bulk counts, mixed inserts/updates, rollback
-across all seven tables, timestamp refresh, and retention of missing children.
+across all six tables, timestamp refresh, and retention of missing children.
 Unit tests cover multiple checks, split payments, voids, discounts, taxes,
 service charges, optional nulls, and 1,100 levels of modifiers. Tests make no
 live Toast calls.

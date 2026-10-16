@@ -1,4 +1,4 @@
-"""Focused fixtures for the seven normalized Orders API source tables."""
+"""Focused fixtures for the six normalized Orders API source tables."""
 
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
@@ -84,7 +84,7 @@ class NestedNormalizationTests(unittest.TestCase):
     def test_all_tables_multiple_checks_split_payments_and_voids(self):
         tables = self.flatten()
         expected = {"orders": 1, "checks": 2, "selections": 4, "payments": 2,
-                    "applied_discounts": 2, "service_charges": 1, "applied_taxes": 2}
+                    "applied_discounts": 2, "applied_taxes": 2}
         self.assertEqual({table: len(rows) for table, rows in tables.items()}, expected)
         for table, rows in tables.items():
             for row in rows:
@@ -125,8 +125,9 @@ class NestedNormalizationTests(unittest.TestCase):
         self.assertEqual(taxes[UUID(int=24001)]["service_charge_id"], UUID(int=25000))
         self.assertIsNone(taxes[UUID(int=24001)]["tax_inclusion"])
         self.assertEqual(taxes[UUID(int=24000)]["tax_rate_id"], taxes[UUID(int=24001)]["tax_rate_id"])
-        self.assertEqual(tables["service_charges"][0]["service_charge_id"], UUID(int=60005))
-        self.assertTrue(tables["service_charges"][0]["gratuity"])
+        self.assertEqual(taxes[UUID(int=24001)]["configured_service_charge_id"], UUID(int=60005))
+        self.assertIsNone(taxes[UUID(int=24000)]["configured_service_charge_id"])
+        self.assertNotIn("service_charges", tables)
 
     def test_one_modifier_and_deeper_than_python_recursion_limit(self):
         payload = order(20001)

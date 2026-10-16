@@ -90,6 +90,29 @@ Legacy `daily`, `weekly`, and `bulk` commands remain accepted. A standalone
 `--year ... --period ...` selection implies bulk. Numeric `--week N` remains
 accepted for older fiscal commands; prefer `-w N` or `--fiscal-week N`.
 
+### Toast sync modes
+
+Toast accepts `--daily`, `--weekly`, or `--period`, updating all enabled endpoints
+by default. `--daily` selects yesterday (or an explicit `YYYY-MM-DD`); `--weekly`
+selects the last completed fiscal week. `--period` requires `--year`; `--week N`
+selects a week within one period from `core.calendar`.
+
+```sh
+.venv/bin/python -m src.toast-api-update --daily
+.venv/bin/python -m src.toast-api-update --daily 2026-10-08 --sync orders labor
+.venv/bin/python -m src.toast-api-update --weekly --sync orders labor
+.venv/bin/python -m src.toast-api-update --year 2026 --period 7 8 9 --sync orders
+.venv/bin/python -m src.toast-api-update --daily --sync labor --labor-resources time-entries
+```
+
+Toast selections include `restaurants`, `orders`, and `labor`; use `--sync` or
+`--tables` to select them, or `all` for every endpoint. Labor defaults to all four
+endpoints; narrow it with `--labor-resources employees jobs time-entries shifts`.
+Restaurants, employees, and jobs refresh once per invocation; orders, time
+entries, and shifts use the selected business dates. Toast retains its explicit
+business-date commands and restaurants-only no-argument default. Its `--dry-run`
+fetches and validates without database writes. See [Toast setup](docs/toast-api-update.md).
+
 ### R365 requests and retries
 
 R365 GET requests retry timeouts twice, after 2 and 4 seconds. Vendor invoices

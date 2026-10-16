@@ -1,6 +1,6 @@
 # Toast source updater
 
-Available resources: `restaurants` and `orders`. For order setup, date arguments,
+Available resources: `restaurants`, `orders`, `labor`, and `configuration`. For order setup, date arguments,
 field mapping, and verification, see [toast-orders.md](toast-orders.md).
 
 Run from the repository root using the existing environment and configuration.
@@ -13,13 +13,44 @@ psql -X -v ON_ERROR_STOP=1 -f db_utils/schema/toast_restaurants.sql
 .venv/bin/python -m src.toast-api-update --sync restaurants
 ```
 
-Omitting `--sync restaurants` also syncs restaurants. `--sync` accepts one or more
+Without a mode, omitting `--sync` syncs restaurants. `--sync` accepts one or more
 registered resource names; duplicates run once, in the requested order. Currently
-`restaurants` and `orders` are registered. The restaurant setup SQL creates only
+`restaurants`, `orders`, `labor`, and `configuration` are registered. The restaurant setup SQL creates only
 the schema and requested table if missing, with UUID identifiers, a primary key,
 and no foreign keys. It does not migrate an incompatible existing table. The
 updater itself performs no DDL. Dry run reads company configuration and calls the
 API, including the existing authentication/cache mechanism, but writes no database rows.
+
+## Daily, weekly, and fiscal period runs
+
+All three modes update every registered resource by default, including all Labor
+endpoints. Use `--sync` (or `--tables`) to select resources, and
+`--labor-resources` to narrow Labor endpoints, and `--config-resources` to narrow
+configuration endpoints. `--sync all` explicitly selects all.
+
+```sh
+.venv/bin/python -m src.toast-api-update --daily
+.venv/bin/python -m src.toast-api-update --daily 2026-10-08 --sync orders labor
+.venv/bin/python -m src.toast-api-update --weekly --sync orders labor
+.venv/bin/python -m src.toast-api-update --period 9 10 --year 2026
+.venv/bin/python -m src.toast-api-update --period 9 --year 2026 --week 5 --sync orders
+.venv/bin/python -m src.toast-api-update --daily --sync labor --labor-resources time-entries --dry-run
+```
+
+`--daily` selects yesterday only; `--daily YYYY-MM-DD` selects that date. Daily
+mode does not query `core.calendar`. `--weekly` selects
+the complete fiscal week before today's fiscal week. `--period` requires a fiscal
+`--year` and accepts one or more periods; optional `--week` requires a single
+period. Both updaters share the same `core.calendar` resolution, including fiscal
+year boundaries and fifth weeks. Period gaps remain separate ranges.
+
+Orders, time entries, and shifts use those dates through the existing Toast
+business-date/time-zone handling. Restaurants, configuration, employees, and jobs
+refresh once per invocation. Configuration uses its own optional
+`--config-last-modified` timestamp; mode dates do not set this filter. Without
+the filter, configuration performs a full fetch. All required source schemas must already exist. Modes cannot
+be combined with explicit business dates or Labor modification timestamps;
+existing commands using those arguments without a mode remain supported.
 
 ## Source and mapping
 
@@ -66,8 +97,10 @@ the row. No company names, time zones, or other master values overwrite Toast da
 - `src/toast_sync/restaurants.py` owns `normalize_restaurant`, `upsert_restaurants`,
   and `sync_restaurants`. Each future API resource gets its own module in this package.
 - `src/toast_sync/orders.py` owns normalization of orders and their checks,
-  selections, payments, discounts, service charges and taxes, plus date validation
+  selections, payments, discounts, and taxes, plus date validation
   and per-restaurant/business-date synchronization.
+- `src/toast_sync/configuration.py` owns all 24 configuration endpoints.
+  See [Configuration setup, migration, and incremental updates](toast-configuration.md).
 - `src/toast_sync/labor.py` owns Labor endpoints and their normalized tables.
   See [Labor setup, schema, and examples](toast-labor.md).
 - `src/toast_sync/dates.py` registers the shared business-date CLI arguments.
@@ -88,7 +121,7 @@ options before external calls. `get_options` returns keyword arguments for `sync
 and raises `ValueError` for invalid options. Keep resource-specific
 normalization and writes in that module and reusable HTTP/authentication in
 `ToastClient`. CLI choices come directly from the registry. Adding a resource
-does not add it to the default run, which remains restaurants only.
+adds it to the default mode runs. Without a mode, the default remains restaurants only.
 
 Selected modules run sequentially. Restaurants use one transaction; orders use
   one transaction per restaurant/business date. Labor uses one transaction per
@@ -128,5 +161,7 @@ The optional database test requires a fresh local PostgreSQL instance with Unix
 socket directory `/tmp/toast-restaurants-pg-*`, port 55440, database `postgres`,
 and user `toast_test`. Set `TOAST_TEST_PG_SOCKET` to that directory to enable it.
 It checks repeat updates, multiple bulk pages, NULLs, rollback, and no foreign keys.
-The Orders module writes all seven Orders-derived source tables. Labor is available
-with `--sync labor`; menu configuration and kitchen endpoints remain future modules.
+The Orders module writes six Orders-derived source tables. Labor is available
+with `--sync labor`; configuration uses `--sync configuration`. The configuration
+migration retires the old Orders-derived service_charges table. Kitchen endpoints
+remain a future module.

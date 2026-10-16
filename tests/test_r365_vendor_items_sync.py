@@ -63,6 +63,22 @@ class VendorItemsSyncTests(unittest.TestCase):
         self.connect.assert_called_once()
         self.connection.commit.assert_called_once()
 
+    def test_duplicate_identical_vendor_item_ids_are_collapsed(self):
+        duplicate = item()
+        self.client.request.return_value = {"items": [item(), duplicate]}
+        module.sync_vendor_items(self.client)
+        rows = self.execute.call_args.args[2]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("collapsed 1 exact duplicate IDs", self.output.getvalue())
+
+    def test_conflicting_vendor_item_duplicate_fails_before_write(self):
+        duplicate = item()
+        duplicate["price"] = 99
+        self.client.request.return_value = {"items": [item(), duplicate]}
+        with self.assertRaisesRegex(ValueError, "Conflicting vendor-item records"):
+            module.sync_vendor_items(self.client)
+        self.connect.assert_not_called()
+
     def test_empty_results_skip_connection(self):
         for payload in ({"items": []}, {"items": None}, {}):
             self.client.request.return_value = payload

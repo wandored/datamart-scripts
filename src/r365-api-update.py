@@ -566,7 +566,8 @@ def r365_vendor_invoices(client=None, invoices=None):
 
 
 def r365_vendor_invoice_details(invoices):
-    records = []
+    records_by_id = {}
+    duplicate_count = 0
     for invoice in invoices:
         require_vendor_invoice_fields(invoice, ("id",), "Vendor invoice")
         invoice_id = convert_uuid(invoice["id"])
@@ -576,26 +577,32 @@ def r365_vendor_invoice_details(invoices):
                 ("id", "eachAmount", "quantity", "total"),
                 f"Detail for vendor invoice {invoice_id}",
             )
-            records.append(
-                {
-                    "id": convert_uuid(detail["id"]),
-                    "vendor_invoice_id": invoice_id,
-                    "each_amount": detail["eachAmount"],
-                    "general_ledger_account_id": convert_uuid(
-                        (detail.get("generalLedgerAccount") or {}).get("id")
-                    ),
-                    "item_id": convert_uuid((detail.get("item") or {}).get("id")),
-                    "quantity": detail["quantity"],
-                    "quantity_ordered": detail.get("quantityOrdered"),
-                    "total": detail["total"],
-                    "unit_of_measure_id": convert_uuid(
-                        (detail.get("unitOfMeasure") or {}).get("id")
-                    ),
-                    "vendor_item_id": convert_uuid(
-                        (detail.get("vendorItem") or {}).get("id")
-                    ),
-                }
-            )
+            detail_id = convert_uuid(detail["id"])
+            record = {
+                "id": detail_id,
+                "vendor_invoice_id": invoice_id,
+                "each_amount": detail["eachAmount"],
+                "general_ledger_account_id": convert_uuid(
+                    (detail.get("generalLedgerAccount") or {}).get("id")
+                ),
+                "item_id": convert_uuid((detail.get("item") or {}).get("id")),
+                "quantity": detail["quantity"],
+                "quantity_ordered": detail.get("quantityOrdered"),
+                "total": detail["total"],
+                "unit_of_measure_id": convert_uuid(
+                    (detail.get("unitOfMeasure") or {}).get("id")
+                ),
+                "vendor_item_id": convert_uuid(
+                    (detail.get("vendorItem") or {}).get("id")
+                ),
+            }
+            if detail_id in records_by_id:
+                if records_by_id[detail_id] != record:
+                    raise ValueError("Conflicting vendor invoice detail records for duplicate id")
+                duplicate_count += 1
+                continue
+            records_by_id[detail_id] = record
+    records = list(records_by_id.values())
     df = pd.DataFrame(
         records,
         columns=[
@@ -611,7 +618,10 @@ def r365_vendor_invoice_details(invoices):
             "vendor_item_id",
         ],
     )
-    print(f"Fetched {len(df):,} vendor invoice details.")
+    print(
+        f"Fetched {len(df) + duplicate_count:,} vendor invoice details; "
+        f"collapsed {duplicate_count:,} exact duplicate IDs."
+    )
     return df
 
 
@@ -656,15 +666,15 @@ def r365_vendor_items(client, full_download=False, **modified_dates):
             modified_on_end=end.isoformat(),
         )
         scope = f"modified on {now.date()}"
-    records = []
+    records_by_id = {}
+    duplicate_count = 0
     for row in items:
         item_id = convert_uuid(row.get("id"))
         if item_id is None:
             raise ValueError("Vendor item is missing its required id")
         if not isinstance(row.get("isPrimary"), bool):
             raise ValueError(f"Vendor item {item_id} requires a boolean isPrimary")
-        records.append(
-            {
+        record = {
                 "id": item_id,
                 "name": row.get("name"),
                 "vendor_id": convert_uuid((row.get("vendor") or {}).get("id")),
@@ -684,7 +694,13 @@ def r365_vendor_items(client, full_download=False, **modified_dates):
                 "created_on": row.get("createdOn"),
                 "modified_on": row.get("modifiedOn"),
             }
-        )
+        if item_id in records_by_id:
+            if records_by_id[item_id] != record:
+                raise ValueError(f"Conflicting vendor-item records for id {item_id}")
+            duplicate_count += 1
+            continue
+        records_by_id[item_id] = record
+    records = list(records_by_id.values())
     df = pd.DataFrame(
         records,
         columns=[
@@ -704,7 +720,10 @@ def r365_vendor_items(client, full_download=False, **modified_dates):
             "modified_on",
         ],
     )
-    print(f"Fetched {len(df):,} vendor items {scope}.")
+    print(
+        f"Fetched {len(items):,} vendor items {scope}; "
+        f"collapsed {duplicate_count:,} exact duplicate IDs."
+    )
     return df
 
 

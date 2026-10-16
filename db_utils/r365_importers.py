@@ -58,38 +58,24 @@ def get_transactions(
         params["dateOfBusinessEnd"] = str(business_date_end)
 
     transactions = []
-
-    while True:
-        response = client.request(
-            "GET",
-            "/v1/accounting/transactions",
-            params=params,
-        )
-
+    response = client.request(
+        "GET",
+        "/v1/accounting/transactions",
+        params=params,
+    )
+    while response:
         transactions.extend(response.get("transactions", []))
-
         next_link = response.get("nextLink")
         if not next_link:
             break
 
-        # Follow R365's continuation URL exactly
+        # R365's transaction nextLink contains only a continuation token; the
+        # endpoint still requires the original location and date filters.
         response = client.request(
             "GET",
             next_link,
+            params=params,
         )
-
-        transactions.extend(response.get("transactions", []))
-
-        while response.get("nextLink"):
-            next_link = response["nextLink"]
-            response = client.request(
-                "GET",
-                next_link,
-            )
-
-            transactions.extend(response.get("transactions", []))
-
-        break
 
     return transactions
 

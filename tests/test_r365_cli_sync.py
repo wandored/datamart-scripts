@@ -204,6 +204,29 @@ class SyncCliTests(unittest.TestCase):
                 self.assertIsNone(params.get("modifiedOnStart"))
                 self.assertIsNone(params.get("modifiedOnEnd"))
 
+    def test_transaction_continuation_keeps_location_filter(self):
+        client = object.__new__(R365Client)
+        client.request = Mock(side_effect=[
+            {"transactions": [{"id": "first"}], "nextLink": "/transactions?continuationToken=opaque"},
+            {"transactions": [{"id": "second"}], "nextLink": None},
+        ])
+
+        rows = get_transactions(
+            client,
+            "location-123",
+            start_date="2026-10-13T00:00:00-04:00",
+            end_date="2026-10-13T23:59:59-04:00",
+        )
+
+        self.assertEqual([row["id"] for row in rows], ["first", "second"])
+        self.assertEqual(client.request.call_args_list[1].args, ("GET", "/transactions?continuationToken=opaque"))
+        self.assertEqual(client.request.call_args_list[1].kwargs["params"], {
+            "locationId": "location-123",
+            "modifiedOnStart": "2026-10-13T00:00:00-04:00",
+            "modifiedOnEnd": "2026-10-13T23:59:59-04:00",
+            "pageSize": 250,
+        })
+
     def test_dated_group_passes_calendar_dates_and_handles_empty_responses(self):
         client = object.__new__(R365Client)
         client.request = Mock(side_effect=[

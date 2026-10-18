@@ -40,7 +40,8 @@ class VendorInvoiceSyncTests(unittest.TestCase):
         self.assertEqual(self.client.request.call_count, 2)
         first = self.client.request.call_args_list[0]
         self.assertEqual(first.args, ("GET", "/v1/inventory/invoices"))
-        self.assertEqual(first.kwargs["params"]["pageSize"], 250)
+        self.assertEqual(first.kwargs["params"]["pageSize"], 50)
+        self.assertEqual(first.kwargs["timeout"], (15, 180))
         self.assertNotIn("dateStart", first.kwargs["params"])
         self.assertNotIn("IncludeDetails", first.kwargs["params"])
         self.assertEqual(self.client.request.call_args_list[1].args, ("GET", "/next"))
@@ -99,6 +100,23 @@ class VendorInvoiceSyncTests(unittest.TestCase):
         self.assertEqual(headers.args[2][0][4], 0)
         self.assertEqual(headers.args[2][0][-3:], (None, None, None))
         self.assertEqual(details.args[2][0], (UUID(int=11), UUID(int=1), 0, None, None, 0, None, 0, None, None))
+
+    def test_exact_duplicate_vendor_invoice_details_are_collapsed(self):
+        duplicate_invoice = invoice()
+        duplicate_invoice["details"].append(duplicate_invoice["details"][0].copy())
+        frame = module.r365_vendor_invoice_details([duplicate_invoice])
+
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(frame.iloc[0]["vendor_invoice_id"], UUID(int=1))
+
+    def test_conflicting_vendor_invoice_detail_duplicate_fails(self):
+        conflicting_invoice = invoice()
+        conflicting_invoice["details"].append(
+            conflicting_invoice["details"][0] | {"total": 99}
+        )
+
+        with self.assertRaisesRegex(ValueError, "Conflicting vendor invoice detail records"):
+            module.r365_vendor_invoice_details([conflicting_invoice])
 
     def test_required_fields_fail_before_database(self):
         for scope, fields in (

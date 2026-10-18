@@ -189,33 +189,6 @@ CREATE TABLE IF NOT EXISTS toast.applied_discounts (
 CREATE INDEX IF NOT EXISTS applied_discounts_order_id_idx ON toast.applied_discounts (order_id);
 CREATE INDEX IF NOT EXISTS applied_discounts_check_id_idx ON toast.applied_discounts (check_id);
 
-CREATE TABLE IF NOT EXISTS toast.service_charges (
-    id UUID NOT NULL,
-    order_id UUID NOT NULL,
-    restaurant_id UUID NOT NULL,
-    business_date DATE,
-    check_id UUID NOT NULL,
-    service_charge_id UUID,
-    payment_id UUID,
-    refund_transaction_id UUID,
-    name TEXT,
-    charge_type TEXT,
-    service_charge_calculation TEXT,
-    service_charge_category TEXT,
-    charge_amount NUMERIC,
-    refund_amount NUMERIC,
-    tax_refund_amount NUMERIC,
-    delivery BOOLEAN,
-    takeout BOOLEAN,
-    dine_in BOOLEAN,
-    gratuity BOOLEAN,
-    taxable BOOLEAN,
-    last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT service_charges_pkey PRIMARY KEY (id)
-);
-CREATE INDEX IF NOT EXISTS service_charges_order_id_idx ON toast.service_charges (order_id);
-CREATE INDEX IF NOT EXISTS service_charges_check_id_idx ON toast.service_charges (check_id);
-
 CREATE TABLE IF NOT EXISTS toast.applied_taxes (
     id UUID NOT NULL,
     order_id UUID NOT NULL,
@@ -224,6 +197,7 @@ CREATE TABLE IF NOT EXISTS toast.applied_taxes (
     check_id UUID NOT NULL,
     selection_id UUID,
     service_charge_id UUID,
+    configured_service_charge_id UUID,
     tax_inclusion TEXT,
     tax_rate_id UUID,
     name TEXT,

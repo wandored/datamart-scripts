@@ -30,50 +30,97 @@ python -m src.<script_name>
 ### R365 sync modes
 
 ```sh
-.venv/bin/python -m src.r365-api-update daily
-.venv/bin/python -m src.r365-api-update weekly
-.venv/bin/python -m src.r365-api-update bulk --year 2026 --period 9 --tables daily_sales
-.venv/bin/python -m src.r365-api-update bulk --year 2026 --period 9 --week 5 --tables daily_sales vendor_invoices
-.venv/bin/python -m src.r365-api-update bulk --year 2026 --period 7 8 9 --tables daily_sales inventory_counts
+.venv/bin/python -m src.r365-api-update --daily
+.venv/bin/python -m src.r365-api-update --week
+.venv/bin/python -m src.r365-api-update --bulk -y 2026
+.venv/bin/python -m src.r365-api-update --bulk -y 2026 -p 10
+.venv/bin/python -m src.r365-api-update --bulk -y 2026 -p 10 -w 2
+.venv/bin/python -m src.r365-api-update --bulk --business-date 2026-10-06
+.venv/bin/python -m src.r365-api-update --bulk -y 2026 -p 10 --tables sales_details vendor_invoices
 ```
 
-An explicit mode is required. These commands replace the old resource flags and
-manual date arguments; update scheduled commands accordingly.
+- `--daily` updates all enabled endpoints for yesterday. `--daily YYYY-MM-DD`
+  selects a specific modification day. Modification timestamp filters cover midnight
+  through 23:59:59.999999 with the runtime's local timezone offset. Jobs and
+  employees instead require inclusive `YYYY-MM-DD` filters, with both boundaries
+  set to the selected date (see the [labor API](https://docs.restaurant365.com/apidocs/public-v1-labor-jobs)).
+- `--week` (alias `--weekly`) looks up yesterday's fiscal year, period, and week
+  in `core.calendar`, then processes each date in that week through yesterday.
+  With the Wednesday–Tuesday fiscal calendar, a Wednesday run processes the
+  previous Wednesday through Tuesday; a Saturday run processes Wednesday–Friday.
+  Missing calendar dates fail before API requests.
+- `--bulk` uses business/document dates, without modification filters. Select a
+  fiscal year with `-y/--year`, optionally periods with `-p/--period`, and a week
+  within one period with `-w/--fiscal-week`. All fiscal dates come from
+  `core.calendar`, including dates falling in a different calendar year.
+  Alternatively, use `--business-date YYYY-MM-DD` for a single business date.
+  Each selected date is requested separately; unselected periods/gaps are not filled.
 
-- `daily` imports the fiscal week containing **yesterday**, from that week's first
-  date through yesterday inclusive. It reads `year`, `period`, and `week` from `core.calendar`,
-  using the runtime's local date. On fiscal day 1, it imports the previous fiscal
-  week's days 1–7; on day 4, it imports the current week's days 1–3.
-- `weekly` refreshes locations, units of measure, item categories, GL accounts,
-  purchase items, vendors, vendor items, jobs, employees (with POS mappings), and
-  users. Modification/creation timestamps and employee hire dates do not make
-  these reference records daily data. Jobs and employees require API date filters;
-  the refresh requests modification dates from `0001-01-01` through today.
-  Employees are scoped to all locations returned by the locations API.
-- `bulk` imports only the required `--tables` selection for fiscal `year` and one
-  or more `period` values. Choose one or more of `daily_sales`, `inventory_counts`,
-  `transactions`, and `vendor_invoices`; there is no default selection.
-  Add `--week` to select a week within a single period. Week numbers restart within each
-  period: usually 1–4, with week 5 when present in `core.calendar`. For example,
-  fiscal year 2026 period 9 has five weeks; its other twelve periods have four.
-  Dates are read from `core.calendar`; unselected periods and calendar gaps are
-  never filled in. A selection with no matching dates fails before API calls.
+Use `--tables` (alias `--sync`) to select endpoints. Daily/week default to
+`locations`, `units_of_measure`, `item_categories`, `gl_accounts`, `purchase_items`,
+`vendors`, `vendor_items`, `jobs`, `employees`, `users`, `inventory_counts`,
+`transactions`, `vendor_invoices`, `daily_sales`, `labor_punches`,
+`payroll_summaries`, and `sales_analytics`. Daily sales, payroll summaries, and
+sales analytics use business dates; the others use modification filters. Employees and transactions need a full location-ID lookup
+for request scoping; unchanged locations must still be included.
 
-Daily imports all dated tables; bulk selects from the same groups: daily sales and their child tables,
-including sales accounts, inventory counts, transactions, and vendor invoices
-and their details. All use inclusive record-date
-filters, not modification dates: sales/counts/transactions use business dates,
-and vendor invoices use invoice dates. Reference
-records embedded in sales responses are kept with their sales sync.
+**Sales API limitation:** [daily sales](https://docs.restaurant365.com/apidocs/public-v1-sales-daily-sales)
+requires `businessDate` and `location`, and does not expose modification filters.
+Daily/week refresh sales for the selected business dates. Changes to older sales
+business dates require a bulk rerun; daily/week cannot guarantee finding them.
 
-The API date filters follow the R365 documentation for
-[transactions](https://docs.restaurant365.com/apidocs/public-v1-accounting-transactions),
-[vendor invoices](https://docs.restaurant365.com/apidocs/public-v1-inventory-invoices), and
-[jobs](https://docs.restaurant365.com/apidocs/public-v1-labor-jobs).
-Older corrections outside the daily fiscal window require a bulk rerun.
+Bulk defaults to `daily_sales`, `transactions`, `vendor_invoices`, `labor_punches`,
+`payroll_summaries`, and `sales_analytics`.
+`sales_details` and `sales_tickets` are aliases for the complete sales import,
+which also maintains `sales_payments`, `sales_ticket_taxes`, and `sales_account`
+from the same response. Vendor invoices include `vendor_invoice_details`.
+`inventory_counts` also has a business date and may be selected explicitly for
+bulk; it is excluded from the default. Reference tables are rejected in bulk.
+`--tables all` selects the defaults for the chosen mode. Existing reference data
+is retained; bulk does not populate missing reference tables on a fresh database.
 
-R365 GET requests retry timeouts twice, after 2 and 4 seconds, keeping the
-60-second timeout per attempt. Continuation retries request the same page;
+Bulk uses the documented business-date filters for
+[transactions](https://docs.restaurant365.com/apidocs/public-v1-accounting-transactions)
+and [inventory counts](https://docs.restaurant365.com/apidocs/public-v1-inventory-inventory-counts),
+and invoice-date filters for
+[vendor invoices](https://docs.restaurant365.com/apidocs/public-v1-inventory-invoices).
+The existing upsert and complete-sales-snapshot behavior is preserved.
+
+Legacy `daily`, `weekly`, and `bulk` commands remain accepted. A standalone
+`--year ... --period ...` selection implies bulk. Numeric `--week N` remains
+accepted for older fiscal commands; prefer `-w N` or `--fiscal-week N`.
+
+### Toast sync modes
+
+Toast accepts `--daily`, `--weekly`, or `--period`, updating all enabled endpoints
+by default. `--daily` selects yesterday (or an explicit `YYYY-MM-DD`); `--weekly`
+selects the last completed fiscal week. `--period` requires `--year`; `--week N`
+selects a week within one period from `core.calendar`.
+
+```sh
+.venv/bin/python -m src.toast-api-update --daily
+.venv/bin/python -m src.toast-api-update --daily 2026-10-08 --sync orders labor
+.venv/bin/python -m src.toast-api-update --weekly --sync orders labor
+.venv/bin/python -m src.toast-api-update --year 2026 --period 7 8 9 --sync orders
+.venv/bin/python -m src.toast-api-update --daily --sync labor --labor-resources time-entries
+```
+
+Toast selections include `restaurants`, `orders`, and `labor`; use `--sync` or
+`--tables` to select them, or `all` for every endpoint. Labor defaults to all four
+endpoints; narrow it with `--labor-resources employees jobs time-entries shifts`.
+Restaurants, employees, and jobs refresh once per invocation; orders, time
+entries, and shifts use the selected business dates. Toast retains its explicit
+business-date commands and restaurants-only no-argument default. Its `--dry-run`
+fetches and validates without database writes. See [Toast setup](docs/toast-api-update.md).
+
+### R365 requests and retries
+
+R365 GET requests retry timeouts twice, after 2 and 4 seconds. Vendor invoices
+request 50 headers (plus nested details) per page, with a 15-second connection
+timeout and a 180-second read timeout on every page and retry. Other endpoints
+keep their 60-second timeout. These are inactivity limits, not total runtime limits.
+Smaller pages and a longer read timeout can help slow responses but cannot
+guarantee availability of the R365 service. Continuation retries request the same page;
 exhausted retries raise the error. Vendor invoices and their details are written
 only after all pages are fetched. Earlier successful table updates remain
 committed. To retry just vendor invoices for September 30–October 6, 2026:
@@ -84,9 +131,16 @@ committed. To retry just vendor invoices for September 30–October 6, 2026:
 ```
 
 Accounting `invoices` and `invoice_details` updates are commented out in the
-dispatcher and excluded from bulk choices. Their import functions remain available
+dispatcher and excluded from all endpoint selections. Their import functions remain available
 for future reactivation; use `vendor_invoices` and `vendor_invoice_details` for
 new views. Existing database tables and data are unchanged.
+
+### R365 labor punches, payroll summaries, and sales analytics
+
+Apply [the new labor table setup](db_utils/schema/r365_labor.sql) before using the
+new defaults. It creates `labor_punches`, `payroll_summaries`, `sales_analytics`,
+and `sales_analytics_jobs`; the importer does not create tables automatically.
+See [R365 labor setup, filters, and limitations](docs/r365-labor.md).
 
 ### R365 employees, jobs, and users
 
@@ -161,6 +215,15 @@ servers are stored only as IDs; server names, payroll IDs, location names/number
 and free-text ticket comments are excluded from this import. No raw payload is
 stored. Existing employee/location imports are unchanged.
 
+Daily summaries are matched by `(location_id, business_date)`. A different
+incoming summary UUID means R365 replaced the summary. After validating the
+complete API snapshot, the importer deletes the old summary's payments, taxes,
+daily item totals, tickets (including inactive rows), and header, then imports
+the replacement using its new UUID. Shared `sales_account` records are retained.
+The entire replacement is one transaction: failures restore the previous snapshot.
+A transaction-scoped location/day lock serializes competing imports. Same-ID
+refreshes continue to upsert and mark missing children inactive.
+
 Daily and bulk sales select locations from `core.restaurants` where
 `active IS TRUE` and `r365_guid IS NOT NULL`, using `r365_guid` as the API location
 ID and the restaurant's `timezone` for timestamp conversion. The R365 locations
@@ -184,7 +247,7 @@ Explicitly empty/null arrays in a valid complete summary mean no child rows;
 missing arrays or pagination metadata are rejected as incomplete.
 
 Ticket children and daily item groups absent from a successful complete snapshot become `is_current = false`;
-returned children become current again. No rows are deleted. `last_synced_at`
+returned children become current again. Rows are deleted only when replacing a superseded summary as described above. `last_synced_at`
 records when a row was last received; inactive rows retain their previous value.
 This is current-state synchronization, not a full change-history archive. Tax
 slots can be overwritten if the source reorders its array.

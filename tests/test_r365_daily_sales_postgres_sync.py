@@ -91,6 +91,23 @@ class DailySalesPostgresTests(unittest.TestCase):
         self.assertEqual(counts("sales_tickets"), (2, 2))
         self.assertEqual(counts("sales_ticket_taxes"), (3, 3))
 
+        # R365 can return a new summary ID for an already stored location/date.
+        replacement = page([first, ticket(4)])
+        replacement["data"]["id"] = uid(99)
+        replacement["data"]["netSales"] = 42
+        sync(replacement)
+        sync(replacement)
+        self.assertEqual(counts("sales_tickets"), (2, 2))
+        self.assertEqual(counts("sales_payments"), (2, 2))
+        self.assertEqual(counts("sales_ticket_taxes"), (3, 3))
+        with connection.cursor() as cur:
+            cur.execute("SELECT id::text, net_sales FROM r365.daily_sales")
+            self.assertEqual(cur.fetchall(), [(uid(99), 42)])
+            cur.execute("SELECT DISTINCT daily_sales_id::text FROM r365.sales_tickets")
+            self.assertEqual(cur.fetchall(), [(uid(99),)])
+        connection.commit()
+        sync(page([first, ticket(3)]))
+
         # A real SQL failure after inactivation must roll back headers and all children.
         with connection.cursor() as cur:
             cur.execute("ALTER TABLE r365.sales_ticket_taxes ADD CONSTRAINT test_rate CHECK (rate < 1)")
@@ -98,6 +115,7 @@ class DailySalesPostgresTests(unittest.TestCase):
         invalid = copy.deepcopy(changed)
         invalid["taxDetail"][0]["rate"] = 2
         bad_page = page([invalid])
+        bad_page["data"]["id"] = uid(100)
         bad_page["data"]["netSales"] = 999
         with self.assertRaises(psycopg2.errors.CheckViolation):
             sync(bad_page)
@@ -106,8 +124,8 @@ class DailySalesPostgresTests(unittest.TestCase):
         self.assertEqual(counts("sales_payments"), (2, 2))
         self.assertEqual(counts("sales_ticket_taxes"), (3, 3))
         with connection.cursor() as cur:
-            cur.execute("SELECT net_sales FROM r365.daily_sales")
-            self.assertEqual(float(cur.fetchone()[0]), 10.25)
+            cur.execute("SELECT id::text, net_sales FROM r365.daily_sales")
+            self.assertEqual(cur.fetchone(), (uid(1), 10.25))
             cur.execute("""SELECT column_name FROM information_schema.columns
                            WHERE table_schema = 'r365'""")
             columns = {row[0] for row in cur.fetchall()}

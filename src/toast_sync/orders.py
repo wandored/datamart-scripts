@@ -1,4 +1,4 @@
-"""Normalize the Orders API into seven source tables, one restaurant/day at a time."""
+"""Normalize the Orders API into six source tables, one restaurant/day at a time."""
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -161,12 +161,6 @@ CHILD_FIELDS = {
         "text": {"name": "name", "discount_type": "discountType", "discount_plu": "discountPlu", "processing_state": "processingState", "applied_promo_code": "appliedPromoCode", "reason_name": "appliedDiscountReason.name", "reason_description": "appliedDiscountReason.description", "reason_comment": "appliedDiscountReason.comment"},
         "numeric": {"discount_amount": "discountAmount", "non_tax_discount_amount": "nonTaxDiscountAmount", "discount_percent": "discountPercent"},
     },
-    "service_charges": {
-        "uuid": {"service_charge_id": "serviceCharge.guid", "payment_id": "paymentGuid", "refund_transaction_id": "refundDetails.refundTransaction.guid"},
-        "text": {"name": "name", "charge_type": "chargeType", "service_charge_calculation": "serviceChargeCalculation", "service_charge_category": "serviceChargeCategory"},
-        "numeric": {"charge_amount": "chargeAmount", "refund_amount": "refundDetails.refundAmount", "tax_refund_amount": "refundDetails.taxRefundAmount"},
-        "boolean": {"delivery": "delivery", "takeout": "takeout", "dine_in": "dineIn", "gratuity": "gratuity", "taxable": "taxable"},
-    },
     "applied_taxes": {
         "uuid": {"tax_rate_id": "taxRate.guid"},
         "text": {"name": "name", "display_name": "displayName", "type": "type", "jurisdiction": "jurisdiction", "jurisdiction_type": "jurisdictionType"},
@@ -179,8 +173,7 @@ PARENT_COLUMNS = {
     "selections": ("check_id", "parent_selection_id"),
     "payments": ("check_id",),
     "applied_discounts": ("check_id", "selection_id"),
-    "service_charges": ("check_id",),
-    "applied_taxes": ("check_id", "selection_id", "service_charge_id", "tax_inclusion"),
+    "applied_taxes": ("check_id", "selection_id", "service_charge_id", "configured_service_charge_id", "tax_inclusion"),
 }
 TABLE_COLUMNS = {"orders": ORDER_COLUMNS}
 for _table, _groups in CHILD_FIELDS.items():
@@ -242,16 +235,13 @@ def normalize_discount(payload, context, selection_id=None):
     return normalize_child("applied_discounts", payload, {**context, "selection_id": selection_id})
 
 
-def normalize_service_charge(payload, context):
-    return normalize_child("service_charges", payload, context)
-
-
-def normalize_tax(payload, context, selection_id=None, service_charge_id=None, tax_inclusion=None):
+def normalize_tax(payload, context, selection_id=None, service_charge_id=None, tax_inclusion=None,
+                  configured_service_charge_id=None):
     if (selection_id is None) == (service_charge_id is None):
         raise ValueError("Applied tax must have exactly one selection or service-charge parent")
     return normalize_child("applied_taxes", payload, {
         **context, "selection_id": selection_id, "service_charge_id": service_charge_id,
-        "tax_inclusion": tax_inclusion,
+        "tax_inclusion": tax_inclusion, "configured_service_charge_id": configured_service_charge_id,
     })
 
 
@@ -293,10 +283,13 @@ def flatten_order(payload, restaurant_id, business_date=None, synced_at=None):
             for payment in source_array(check, "payments"):
                 tables["payments"].append(normalize_payment(payment, check_context))
             for charge in source_array(check, "appliedServiceCharges"):
-                charge_row = normalize_service_charge(charge, check_context)
-                tables["service_charges"].append(charge_row)
+                charge_id = source_uuid(source_value(charge, "guid"), "appliedServiceCharge.guid", required=True)
+                configured_id = source_uuid(source_value(charge, "serviceCharge.guid"), "serviceCharge.guid")
                 for tax in source_array(charge, "appliedTaxes"):
-                    tables["applied_taxes"].append(normalize_tax(tax, check_context, service_charge_id=charge_row["id"]))
+                    tables["applied_taxes"].append(normalize_tax(
+                        tax, check_context, service_charge_id=charge_id,
+                        configured_service_charge_id=configured_id,
+                    ))
             for selection, selection_row in walk_selections(source_array(check, "selections"), check_context):
                 selection_id = selection_row["id"]
                 tables["selections"].append(selection_row)
@@ -330,7 +323,7 @@ def fetch_orders(client, restaurant_id, business_date):
 
 
 def upsert_order_tables(tables):
-    """Commit all seven tables together; publish counts only after commit."""
+    """Commit all six tables together; publish counts only after commit."""
     if not tables["orders"]:
         return {table: {"inserted": 0, "updated": 0} for table in TABLE_COLUMNS}
     counts = {}

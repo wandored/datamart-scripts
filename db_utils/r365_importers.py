@@ -25,8 +25,11 @@ def get_invoices(
     )
 
 
-def get_glaccounts(client):
-    return client.get_resource("accounting", "gl-accounts", collection_key="glAccounts")
+def get_glaccounts(client, modified_on_start=None, modified_on_end=None):
+    return client.get_resource(
+        "accounting", "gl-accounts", collection_key="glAccounts",
+        ModifiedOnStart=modified_on_start, ModifiedOnEnd=modified_on_end,
+    )
 
 
 def get_pos_mapping(client, col_key, start_date=None):
@@ -55,58 +58,56 @@ def get_transactions(
         params["dateOfBusinessEnd"] = str(business_date_end)
 
     transactions = []
-
-    while True:
-        response = client.request(
-            "GET",
-            "/v1/accounting/transactions",
-            params=params,
-        )
-
+    response = client.request(
+        "GET",
+        "/v1/accounting/transactions",
+        params=params,
+    )
+    while response:
         transactions.extend(response.get("transactions", []))
-
         next_link = response.get("nextLink")
         if not next_link:
             break
 
-        # Follow R365's continuation URL exactly
+        # R365's transaction nextLink contains only a continuation token; the
+        # endpoint still requires the original location and date filters.
         response = client.request(
             "GET",
             next_link,
+            params=params,
         )
-
-        transactions.extend(response.get("transactions", []))
-
-        while response.get("nextLink"):
-            next_link = response["nextLink"]
-            response = client.request(
-                "GET",
-                next_link,
-            )
-
-            transactions.extend(response.get("transactions", []))
-
-        break
 
     return transactions
 
 
 # Core
-def get_locations(client):
-    return client.get_resource("core", "locations")
+def get_locations(client, modified_on_start=None, modified_on_end=None):
+    return client.get_resource(
+        "core", "locations", collection_key="items",
+        modifiedOnStart=modified_on_start, modifiedOnEnd=modified_on_end,
+    )
 
 
 # Inventory
-def get_units_of_measure(client):
-    return client.get_resource("inventory", "units-of-measure")
+def get_units_of_measure(client, modified_on_start=None, modified_on_end=None):
+    return client.get_resource(
+        "inventory", "units-of-measure", collection_key="items",
+        modifiedOnStart=modified_on_start, modifiedOnEnd=modified_on_end,
+    )
 
 
-def get_item_categories(client):
-    return client.get_resource("inventory", "item-categories")
+def get_item_categories(client, modified_on_start=None, modified_on_end=None):
+    return client.get_resource(
+        "inventory", "item-categories", collection_key="items",
+        modifiedOnStart=modified_on_start, modifiedOnEnd=modified_on_end,
+    )
 
 
-def get_purchase_items(client):
-    return client.get_resource("inventory", "items")
+def get_purchase_items(client, modified_on_start=None, modified_on_end=None):
+    return client.get_resource(
+        "inventory", "items", collection_key="items",
+        modifiedOnStart=modified_on_start, modifiedOnEnd=modified_on_end,
+    )
 
 
 def get_inventory_counts(
@@ -117,12 +118,15 @@ def get_inventory_counts(
     location_id=None,
     include_data="none",
     page_size=250,
+    modified_on_start=None,
+    modified_on_end=None,
 ):
     return client.get_resource(
         "inventory",
         "inventory-counts",
         dateOfBusinessStart=business_date_start,
         dateOfBusinessEnd=business_date_end,
+        modifiedOnStart=modified_on_start, modifiedOnEnd=modified_on_end,
     )
 
 
@@ -162,7 +166,7 @@ def get_vendor_invoices(
     status=None,
     location_id=None,
     include_data="none",
-    page_size=250,
+    page_size=50,
     date_start=None,
     date_end=None,
 ):
@@ -176,6 +180,7 @@ def get_vendor_invoices(
         "inventory",
         "invoices",
         collection_key="items",
+        request_timeout=(15, 180),
         modifiedOnStart=modified_on_start,
         modifiedOnEnd=modified_on_end,
         status=status,
@@ -269,8 +274,48 @@ def get_daily_sales(client, business_date, location_id):
 
 
 # User-Management
-def get_users(client, page_size=250):
+def get_users(client, page_size=250, modified_on_start=None, modified_on_end=None):
+    dates = {}
+    if modified_on_start is not None:
+        dates["ModifiedOnStart"] = modified_on_start
+    if modified_on_end is not None:
+        dates["ModifiedOnEnd"] = modified_on_end
     return client.get_resource(
         "user-management", "users", collection_key="entities",
         next_link_key="nextPage", pageSize=page_size,
+        **dates,
     )
+
+
+# Dated labor data. These endpoints have different response envelopes/filters.
+def get_labor_punches(client, modified_on_start=None, modified_on_end=None,
+                     business_date_start=None, business_date_end=None):
+    return client.get_resource(
+        "labor", "labor-punches", collection_key="data",
+        modifiedOnStart=modified_on_start, modifiedOnEnd=modified_on_end,
+        dateOfBusinessStart=str(business_date_start) if business_date_start is not None else None,
+        dateOfBusinessEnd=str(business_date_end) if business_date_end is not None else None,
+        pageSize=250,
+    )
+
+
+def get_payroll_summaries(client, location_id, start, end):
+    # The documented response is a raw array, with no continuation envelope.
+    rows = client.request("GET", "/v1/labor/payroll-summaries", params={
+        "businessDateStart": str(start), "businessDateEnd": str(end),
+        "locationId": str(location_id), "pageSize": 250,
+    })
+    if not isinstance(rows, list):
+        raise ValueError("Payroll summaries requires an array response")
+    if len(rows) == 250:
+        raise ValueError("Payroll summaries reached pageSize=250 without a continuation link; completeness must be confirmed before writing")
+    return rows
+
+
+def get_sales_analytics(client, location_id, start, end):
+    response = client.request("GET", "/v1/labor/sales-analytics", params={
+        "locationId": str(location_id), "startDate": str(start), "endDate": str(end),
+    })
+    if not isinstance(response, dict):
+        raise ValueError("Sales analytics requires an object response")
+    return response

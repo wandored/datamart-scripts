@@ -19,7 +19,7 @@ class R365Client:
             }
         )
 
-    def request(self, method, endpoint, params=None, json=None):
+    def request(self, method, endpoint, params=None, json=None, timeout=60):
 
         if endpoint.startswith("http"):
             url = endpoint
@@ -41,7 +41,7 @@ class R365Client:
                     url=url,
                     params=params,
                     json=json,
-                    timeout=60,
+                    timeout=timeout,
                 )
                 break
             except requests.Timeout:
@@ -62,13 +62,16 @@ class R365Client:
         return None
 
     def get_all(
-        self, endpoint, params=None, collection_key="items", next_link_key="nextLink"
+        self, endpoint, params=None, collection_key="items", next_link_key="nextLink",
+        request_timeout=None,
     ):
-
+        # Transport settings must apply to every page, never become API filters.
+        request_options = {} if request_timeout is None else {"timeout": request_timeout}
         response = self.request(
             "GET",
             endpoint,
             params=params,
+            **request_options,
         )
 
         while response:
@@ -87,15 +90,18 @@ class R365Client:
             response = self.request(
                 "GET",
                 next_link,
+                **request_options,
             )
 
     def get_resource(
-        self, domain, resource, collection_key="items", next_link_key="nextLink", **params
+        self, domain, resource, collection_key="items", next_link_key="nextLink",
+        request_timeout=None, **params
     ):
         endpoint = f"/v1/{domain}/{resource}"
         return list(
             self.get_all(
                 endpoint, params=params, collection_key=collection_key,
                 next_link_key=next_link_key,
+                request_timeout=request_timeout,
             )
         )

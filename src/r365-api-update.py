@@ -15,14 +15,19 @@ from db_utils.r365_importers import (
     get_jobs,
     get_users,
     get_daily_sales_pages,
+    get_labor_punches,
+    get_payroll_summaries,
+    get_sales_analytics,
 )
 from db_utils.dbconnect import DatabaseConnection
+from db_utils import fiscal_calendar
 from psycopg2 import sql
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from contextlib import nullcontext
 from decimal import Decimal
 import argparse
+import sys
 import pandas as pd
 from uuid import UUID
 
@@ -37,8 +42,8 @@ def convert_uuid(value):
     return UUID(str(value))
 
 
-def r365_locations(client):
-    locations = get_locations(client)
+def r365_locations(client, **modified_dates):
+    locations = get_locations(client, **modified_dates)
 
     df = pd.DataFrame(
         [
@@ -56,8 +61,8 @@ def r365_locations(client):
     return df
 
 
-def r365_units_of_measure(client):
-    units_of_measure = get_units_of_measure(client)
+def r365_units_of_measure(client, **modified_dates):
+    units_of_measure = get_units_of_measure(client, **modified_dates)
 
     df = pd.DataFrame(
         [
@@ -86,8 +91,8 @@ def r365_units_of_measure(client):
     return df
 
 
-def r365_item_categories(client):
-    item_categories = get_item_categories(client)
+def r365_item_categories(client, **modified_dates):
+    item_categories = get_item_categories(client, **modified_dates)
 
     df = pd.DataFrame(
         [
@@ -121,8 +126,8 @@ def r365_item_categories(client):
     return df
 
 
-def r365_gl_accounts(client):
-    gl_accounts = get_glaccounts(client)
+def r365_gl_accounts(client, **modified_dates):
+    gl_accounts = get_glaccounts(client, **modified_dates)
 
     df = pd.DataFrame(
         [
@@ -151,8 +156,8 @@ def r365_gl_accounts(client):
     return df
 
 
-def r365_purchase_items(client):
-    purchase_items = get_purchase_items(client)
+def r365_purchase_items(client, **modified_dates):
+    purchase_items = get_purchase_items(client, **modified_dates)
 
     df = pd.DataFrame(
         [
@@ -225,8 +230,8 @@ def r365_purchase_items(client):
     return df
 
 
-def r365_vendors(client):
-    vendors = get_vendors(client)
+def r365_vendors(client, **modified_dates):
+    vendors = get_vendors(client, **modified_dates)
 
     df = pd.DataFrame(
         [
@@ -243,8 +248,8 @@ def r365_vendors(client):
     return df
 
 
-def r365_inventory_counts(client, start_date=None, end_date=None):
-    if start_date is None and end_date is None:
+def r365_inventory_counts(client, start_date=None, end_date=None, **modified_dates):
+    if start_date is None and end_date is None and not modified_dates:
         start_date = (pd.Timestamp.now() - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
         end_date = pd.Timestamp.now().strftime("%Y-%m-%d")
     inventory_counts = get_inventory_counts(
@@ -253,6 +258,7 @@ def r365_inventory_counts(client, start_date=None, end_date=None):
         business_date_end=end_date,
         include_data="none",
         page_size=250,
+        **modified_dates,
     )
 
     df = pd.DataFrame(
@@ -285,14 +291,17 @@ def r365_inventory_counts(client, start_date=None, end_date=None):
     return df
 
 
-def r365_transactions(client, location_ids, business_date_start=None, business_date_end=None):
+def r365_transactions(client, location_ids, business_date_start=None, business_date_end=None,
+                      modified_on_start=None, modified_on_end=None):
     # Preserve the window until R365's modification timezone is confirmed.
     end = datetime.now().date()
     start = end - timedelta(days=1)
     records = []
 
     for location in location_ids:
-        if business_date_start is None and business_date_end is None:
+        if modified_on_start is not None or modified_on_end is not None:
+            payload = get_transactions(client, location, start_date=modified_on_start, end_date=modified_on_end)
+        elif business_date_start is None and business_date_end is None:
             payload = get_transactions(client, location, start_date=start, end_date=end)
         else:
             payload = get_transactions(
@@ -557,7 +566,8 @@ def r365_vendor_invoices(client=None, invoices=None):
 
 
 def r365_vendor_invoice_details(invoices):
-    records = []
+    records_by_id = {}
+    duplicate_count = 0
     for invoice in invoices:
         require_vendor_invoice_fields(invoice, ("id",), "Vendor invoice")
         invoice_id = convert_uuid(invoice["id"])
@@ -567,26 +577,32 @@ def r365_vendor_invoice_details(invoices):
                 ("id", "eachAmount", "quantity", "total"),
                 f"Detail for vendor invoice {invoice_id}",
             )
-            records.append(
-                {
-                    "id": convert_uuid(detail["id"]),
-                    "vendor_invoice_id": invoice_id,
-                    "each_amount": detail["eachAmount"],
-                    "general_ledger_account_id": convert_uuid(
-                        (detail.get("generalLedgerAccount") or {}).get("id")
-                    ),
-                    "item_id": convert_uuid((detail.get("item") or {}).get("id")),
-                    "quantity": detail["quantity"],
-                    "quantity_ordered": detail.get("quantityOrdered"),
-                    "total": detail["total"],
-                    "unit_of_measure_id": convert_uuid(
-                        (detail.get("unitOfMeasure") or {}).get("id")
-                    ),
-                    "vendor_item_id": convert_uuid(
-                        (detail.get("vendorItem") or {}).get("id")
-                    ),
-                }
-            )
+            detail_id = convert_uuid(detail["id"])
+            record = {
+                "id": detail_id,
+                "vendor_invoice_id": invoice_id,
+                "each_amount": detail["eachAmount"],
+                "general_ledger_account_id": convert_uuid(
+                    (detail.get("generalLedgerAccount") or {}).get("id")
+                ),
+                "item_id": convert_uuid((detail.get("item") or {}).get("id")),
+                "quantity": detail["quantity"],
+                "quantity_ordered": detail.get("quantityOrdered"),
+                "total": detail["total"],
+                "unit_of_measure_id": convert_uuid(
+                    (detail.get("unitOfMeasure") or {}).get("id")
+                ),
+                "vendor_item_id": convert_uuid(
+                    (detail.get("vendorItem") or {}).get("id")
+                ),
+            }
+            if detail_id in records_by_id:
+                if records_by_id[detail_id] != record:
+                    raise ValueError("Conflicting vendor invoice detail records for duplicate id")
+                duplicate_count += 1
+                continue
+            records_by_id[detail_id] = record
+    records = list(records_by_id.values())
     df = pd.DataFrame(
         records,
         columns=[
@@ -602,13 +618,18 @@ def r365_vendor_invoice_details(invoices):
             "vendor_item_id",
         ],
     )
-    print(f"Fetched {len(df):,} vendor invoice details.")
+    print(
+        f"Fetched {len(df) + duplicate_count:,} vendor invoice details; "
+        f"collapsed {duplicate_count:,} exact duplicate IDs."
+    )
     return df
 
 
-def sync_vendor_invoices(client, date_start=None, date_end=None):
+def sync_vendor_invoices(client, date_start=None, date_end=None, **modified_dates):
     """Fetch once and commit vendor invoices and their details together."""
-    if date_start is None and date_end is None:
+    if modified_dates:
+        invoices = get_vendor_invoices(client, **modified_dates)
+    elif date_start is None and date_end is None:
         invoices = get_today_vendor_invoices(client)
     else:
         invoices = get_vendor_invoices(client, date_start=date_start, date_end=date_end)
@@ -625,9 +646,12 @@ def sync_vendor_invoices(client, date_start=None, date_end=None):
     print(f"Upserted {detail_count:,} rows into r365.vendor_invoice_details.")
 
 
-def r365_vendor_items(client, full_download=False):
+def r365_vendor_items(client, full_download=False, **modified_dates):
     """Fetch all vendor items, or items modified today in the local timezone."""
-    if full_download:
+    if modified_dates:
+        items = get_vendor_items(client, **modified_dates)
+        scope = f"modified from {modified_dates['modified_on_start']} through {modified_dates['modified_on_end']}"
+    elif full_download:
         items = get_vendor_items(client)
         scope = "(full download)"
     else:
@@ -642,15 +666,15 @@ def r365_vendor_items(client, full_download=False):
             modified_on_end=end.isoformat(),
         )
         scope = f"modified on {now.date()}"
-    records = []
+    records_by_id = {}
+    duplicate_count = 0
     for row in items:
         item_id = convert_uuid(row.get("id"))
         if item_id is None:
             raise ValueError("Vendor item is missing its required id")
         if not isinstance(row.get("isPrimary"), bool):
             raise ValueError(f"Vendor item {item_id} requires a boolean isPrimary")
-        records.append(
-            {
+        record = {
                 "id": item_id,
                 "name": row.get("name"),
                 "vendor_id": convert_uuid((row.get("vendor") or {}).get("id")),
@@ -670,7 +694,13 @@ def r365_vendor_items(client, full_download=False):
                 "created_on": row.get("createdOn"),
                 "modified_on": row.get("modifiedOn"),
             }
-        )
+        if item_id in records_by_id:
+            if records_by_id[item_id] != record:
+                raise ValueError(f"Conflicting vendor-item records for id {item_id}")
+            duplicate_count += 1
+            continue
+        records_by_id[item_id] = record
+    records = list(records_by_id.values())
     df = pd.DataFrame(
         records,
         columns=[
@@ -690,12 +720,15 @@ def r365_vendor_items(client, full_download=False):
             "modified_on",
         ],
     )
-    print(f"Fetched {len(df):,} vendor items {scope}.")
+    print(
+        f"Fetched {len(items):,} vendor items {scope}; "
+        f"collapsed {duplicate_count:,} exact duplicate IDs."
+    )
     return df
 
 
-def sync_vendor_items(client, full_download=False):
-    items_df = r365_vendor_items(client, full_download=full_download)
+def sync_vendor_items(client, full_download=False, **modified_dates):
+    items_df = r365_vendor_items(client, full_download=full_download, **modified_dates)
     write_to_db(items_df, "vendor_items", "r365")
 
 
@@ -735,7 +768,7 @@ def unique_r365_records(records, key="id"):
 
 
 def labor_date_range(modified_on_start=None, modified_on_end=None):
-    """Use today by default; one supplied boundary means that single day."""
+    """Labor filters accept dates only; one supplied boundary means that day."""
     start = modified_on_start or modified_on_end or datetime.now().date().isoformat()
     end = modified_on_end or start
     start = date.fromisoformat(str(start))
@@ -890,9 +923,9 @@ def sync_jobs(client, modified_on_start=None, modified_on_end=None):
     write_to_db(jobs_df, "jobs", "r365")
 
 
-def r365_users(client):
+def r365_users(client, **modified_dates):
     """The endpoint omits allReportsAccess; leave its database value/default intact."""
-    users = get_users(client)
+    users = get_users(client, **modified_dates)
     print(f"Fetched {len(users):,} users.")
     records = [
         {
@@ -926,8 +959,178 @@ def r365_users(client):
     )
 
 
-def sync_users(client):
-    write_to_db(r365_users(client), "users", "r365")
+def sync_users(client, **modified_dates):
+    write_to_db(r365_users(client, **modified_dates), "users", "r365")
+
+
+
+LABOR_PUNCH_COLUMNS = (
+    "labor_id", "date_worked", "start_time", "end_time", "hours", "pay_rate", "total",
+    "tip_declared_amount", "employee_id", "job_id", "location_id", "created_on",
+    "created_by_id", "modified_on", "modified_by_id",
+)
+# R365 may omit earningType even when Regular Pay and Charge Tips are separate rows.
+PAYROLL_KEYS = ("business_date", "location_id", "legal_entity_id", "employee_id", "job_code_id", "earning_type", "earning_type_name")
+PAYROLL_COLUMNS = (*PAYROLL_KEYS, "total_seconds", "rate", "cost")
+ANALYTICS_KEYS = ("location_id", "business_date", "start_date_time")
+ANALYTICS_MEASURES = {
+    "forecasted_net_sales": "ForecastedNetSales", "forecasted_gross_sales": "ForecastedGrossSales",
+    "forecasted_entree": "ForecastedEntree", "forecasted_labor": "ForecastedLabor",
+    "actual_net_sales": "ActualNetSales", "actual_gross_sales": "ActualGrossSales",
+    "actual_entree_count": "ActualEntreeCount", "actual_labor": "ActualLabor",
+    "actual_labor_ot_hours": "ActualLaborOTHours", "actual_labor_dollars": "ActualLaborDollars",
+    "optimal_labor_variance": "OptimalLaborVariance", "optimal_labor": "OptimalLabor",
+}
+ANALYTICS_JOB_MEASURES = {
+    "labor_forecast": "LaborForecast", "actual_labor": "ActualLabor",
+    "actual_labor_ot_hours": "ActualLaborOTHours", "actual_labor_dollars": "ActualLaborDollars",
+}
+
+
+def labor_reference(row, field):
+    return convert_uuid((row.get(field) or {}).get("id"))
+
+
+def labor_frame(records, columns, keys):
+    """Keep explicit empty schemas; reject conflicting rows at the source grain."""
+    unique = {}
+    for record in records:
+        key = tuple(record[column] for column in keys)
+        if key in unique and unique[key] != record:
+            raise ValueError("Conflicting labor records for the same key")
+        unique[key] = record
+    return pd.DataFrame(list(unique.values()), columns=columns, dtype=object)
+
+
+def r365_labor_punches(rows, location_timezones):
+    records = []
+    for row in rows:
+        location_id = labor_reference(row, "location")
+        zone = location_timezones.get(str(location_id))
+        record = {
+            "labor_id": required_uuid(row, "laborId"),
+            "date_worked": date.fromisoformat(row["dateWorked"]),
+            "employee_id": labor_reference(row, "employee"),
+            "job_id": labor_reference(row, "job"), "location_id": location_id,
+            "created_by_id": labor_reference(row, "createdBy"),
+            "modified_by_id": labor_reference(row, "modifiedBy"),
+        }
+        for column, field in (("start_time", "startTime"), ("end_time", "endTime"),
+                              ("created_on", "createdOn"), ("modified_on", "modifiedOn")):
+            record[column] = sales_timestamp(row.get(field), zone)
+        for column, field in (("hours", "hours"), ("pay_rate", "payRate"),
+                              ("total", "total"), ("tip_declared_amount", "tipDeclaredAmount")):
+            record[column] = sales_numeric(row.get(field))
+        records.append(record)
+    return labor_frame(records, LABOR_PUNCH_COLUMNS, ("labor_id",))
+
+
+def r365_payroll_summaries(rows, location_id, start, end):
+    records = []
+    for row in rows:
+        day = date.fromisoformat(row["businessDate"])
+        actual_location = required_uuid(row.get("location") or {}, "id")
+        if actual_location != UUID(str(location_id)) or not start <= day <= end:
+            raise ValueError("Payroll summary does not match requested location/date")
+        records.append({
+            "business_date": day, "location_id": actual_location,
+            "legal_entity_id": labor_reference(row, "legalEntity"),
+            "employee_id": required_uuid(row.get("employee") or {}, "id"),
+            "job_code_id": labor_reference(row, "jobCode"),
+            "earning_type": row.get("earningType"), "earning_type_name": row.get("earningTypeName"),
+            "total_seconds": row.get("totalSeconds"),
+            "rate": sales_numeric(row.get("rate")), "cost": sales_numeric(row.get("cost")),
+        })
+    return labor_frame(records, PAYROLL_COLUMNS, PAYROLL_KEYS)
+
+
+def analytics_fields(record):
+    """Accept live camelCase and documented PascalCase without losing measures."""
+    if not isinstance(record, dict):
+        raise ValueError("Sales analytics records must be objects")
+    normalized = {}
+    for key, value in record.items():
+        field = key[:1].lower() + key[1:]
+        if field in normalized and normalized[field] != value:
+            raise ValueError(f"Conflicting sales analytics field aliases: {field}")
+        normalized[field] = value
+    return normalized
+
+
+def r365_sales_analytics(response, location_id, start, end, location_timezone):
+    response = analytics_fields(response)
+    if required_uuid(response, "locationId") != UUID(str(location_id)):
+        raise ValueError("Sales analytics does not match requested location")
+    intervals, jobs = [], []
+    for daily in sales_array(response, "dailyData"):
+        daily = analytics_fields(daily)
+        day = datetime.fromisoformat(daily["date"]).date()
+        if not start <= day <= end:
+            raise ValueError("Sales analytics does not match requested dates")
+        for interval in sales_array(daily, "intervals"):
+            interval = analytics_fields(interval)
+            stamp = sales_timestamp(interval["startDateTime"], location_timezone)
+            if stamp is None:
+                raise ValueError("Sales analytics requires an interval timestamp")
+            key = {"location_id": UUID(str(location_id)), "business_date": day, "start_date_time": stamp}
+            intervals.append({
+                **key, "published_at": sales_timestamp(interval.get("publishedAt"), location_timezone),
+                **{column: sales_numeric(interval.get(field[:1].lower() + field[1:])) for column, field in ANALYTICS_MEASURES.items()},
+            })
+            for job in sales_array(interval, "jobDetails"):
+                job = analytics_fields(job)
+                jobs.append({**key, "job_id": required_uuid(job, "jobId"),
+                             **{column: sales_numeric(job.get(field[:1].lower() + field[1:])) for column, field in ANALYTICS_JOB_MEASURES.items()}})
+    return (
+        labor_frame(intervals, (*ANALYTICS_KEYS, "published_at", *ANALYTICS_MEASURES), ANALYTICS_KEYS),
+        labor_frame(jobs, (*ANALYTICS_KEYS, "job_id", *ANALYTICS_JOB_MEASURES), (*ANALYTICS_KEYS, "job_id")),
+    )
+
+
+def sync_dated_labor(client, start, end, tables, modified_dates=None):
+    """Upsert punches; reconcile complete payroll/forecast business-date snapshots."""
+    locations = get_locations(client)
+    timezones = {str(row["id"]): row.get("timeZone") for row in locations}
+    if "labor_punches" in tables:
+        filters = modified_dates or {"business_date_start": start, "business_date_end": end}
+        rows = get_labor_punches(client, **filters)
+        frame = r365_labor_punches(rows, timezones)
+        if not modified_dates and any(not start <= day <= end for day in frame["date_worked"]):
+            raise ValueError("Labor punches do not match requested business dates")
+        frame["last_synced_at"] = datetime.now(timezone.utc)
+        count = write_to_db(frame, "labor_punches", "r365", conflict_columns=("labor_id",))
+        print(f"Labor punches fetched={len(rows):,}, upserted={count:,}.")
+    for location_id, zone in timezones.items():
+        if "payroll_summaries" in tables:
+            rows = get_payroll_summaries(client, location_id, start, end)
+            frame = r365_payroll_summaries(rows, location_id, start, end)
+            count = write_labor_snapshot("payroll_summaries", frame, PAYROLL_KEYS, location_id, start, end)
+            print(f"Payroll summaries {location_id} {start} through {end}: fetched/upserted={count:,}.")
+        if "sales_analytics" in tables:
+            response = get_sales_analytics(client, location_id, start, end)
+            intervals, jobs = r365_sales_analytics(response, location_id, start, end, zone)
+            with DatabaseConnection() as db:
+                interval_count = write_labor_snapshot("sales_analytics", intervals, ANALYTICS_KEYS, location_id, start, end, db=db)
+                job_count = write_labor_snapshot("sales_analytics_jobs", jobs, (*ANALYTICS_KEYS, "job_id"), location_id, start, end, db=db)
+
+            print(f"Sales analytics {location_id} {start} through {end}: intervals={interval_count:,}, jobs={job_count:,}.")
+
+
+def write_labor_snapshot(table, frame, keys, location_id, start, end, db=None):
+    """Mark missing aggregate rows inactive only after a complete validated response."""
+    frame["last_synced_at"] = datetime.now(timezone.utc)
+    frame["is_current"] = True
+    with DatabaseConnection() if db is None else nullcontext(db) as connection:
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (f"r365.labor:{location_id}",),
+        )
+        connection.execute(sql.SQL("""
+            UPDATE r365.{} SET is_current = false
+            WHERE location_id = %s AND business_date BETWEEN %s AND %s AND is_current
+        """).format(sql.Identifier(table)), (UUID(str(location_id)), start, end))
+        count = write_to_db(frame, table, "r365", db=connection, conflict_columns=keys)
+    return count
 
 
 def daily_sales_date_range(business_date_start=None, business_date_end=None):
@@ -1322,9 +1525,11 @@ def sync_daily_sales(
                     frame["is_current"] = True
             counts = {}
             with DatabaseConnection() as db:
-                # The header upsert locks this summary until all children are committed.
+                replaced_id = remove_superseded_daily_sales(
+                    db, UUID(str(location_id)), business_date, summary_id,
+                )
                 counts["daily_sales"] = write_to_db(
-                    summary, "daily_sales", "r365", db=db
+                    summary, "daily_sales", "r365", db=db,
                 )
                 db.execute(
                     """
@@ -1362,6 +1567,11 @@ def sync_daily_sales(
                     counts[table] = write_to_db(
                         frame, table, "r365", db=db, conflict_columns=keys
                     )
+            if replaced_id is not None:
+                print(
+                    f"Daily sales {location_id} {business_date}: replaced summary "
+                    f"{replaced_id} and its dependent rows with {summary_id}."
+                )
             print(
                 f"Daily sales {location_id} {business_date} ({len(detail_rows):,} source item lines): "
                 + ", ".join(
@@ -1370,6 +1580,40 @@ def sync_daily_sales(
                 )
             )
             business_date += timedelta(days=1)
+
+
+def remove_superseded_daily_sales(db, location_id, business_date, summary_id):
+    """Remove a replaced summary's owned rows inside the caller's transaction."""
+    # Serialize imports even when the location/day has no header yet. A row lock
+    # alone cannot protect concurrent first inserts or a delete/insert replacement.
+    db.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"r365.daily_sales:{location_id}:{business_date}",),
+    )
+    db.execute(
+        "SELECT id FROM r365.daily_sales WHERE location_id = %s AND business_date = %s FOR UPDATE",
+        (location_id, business_date),
+    )
+    previous = db.fetchone()
+    if previous is None or previous["id"] == summary_id:
+        return None
+    previous_id = previous["id"]
+    for table in ("sales_payments", "sales_ticket_taxes"):
+        db.execute(
+            sql.SQL("""
+                DELETE FROM r365.{} AS child USING r365.sales_tickets AS ticket
+                WHERE child.sales_ticket_id = ticket.id AND ticket.daily_sales_id = %s
+            """).format(sql.Identifier(table)),
+            (previous_id,),
+        )
+    db.execute(
+        "DELETE FROM r365.sales_details WHERE location_id = %s AND business_date = %s",
+        (location_id, business_date),
+    )
+    db.execute("DELETE FROM r365.sales_tickets WHERE daily_sales_id = %s", (previous_id,))
+    db.execute("DELETE FROM r365.daily_sales WHERE id = %s", (previous_id,))
+    # sales_account is shared reference data, not owned by this summary.
+    return previous_id
 
 
 def write_to_db(
@@ -1433,35 +1677,9 @@ def write_to_db(
 
 
 def fiscal_date_ranges(year, periods, week=None):
-    """Resolve fiscal selections to contiguous ranges without filling calendar gaps."""
-    query = """
-        SELECT date, period
-        FROM core.calendar
-        WHERE year = %s AND period = ANY(%s)
-    """
-    params = [year, list(dict.fromkeys(periods))]
-    if week is not None:
-        query += " AND week = %s"
-        params.append(week)
-    query += " ORDER BY date"
-    with DatabaseConnection() as db:
-        db.execute(query, tuple(params))
-        rows = db.fetchall()
-    missing = set(periods) - {int(row["period"]) for row in rows}
-    if missing:
-        raise ValueError(
-            f"No core.calendar dates for fiscal year {year}, "
-            f"period(s) {', '.join(map(str, sorted(missing)))}"
-            + (f", week {week}" if week is not None else "")
-        )
-    dates = sorted({pd.Timestamp(row["date"]).date() for row in rows})
-    ranges = []
-    for day in dates:
-        if ranges and day == ranges[-1][1] + timedelta(days=1):
-            ranges[-1] = (ranges[-1][0], day)
-        else:
-            ranges.append((day, day))
-    return ranges
+    return fiscal_calendar.fiscal_date_ranges(
+        year, periods, week, connection_factory=DatabaseConnection,
+    )
 
 
 def positive_integer(value):
@@ -1471,54 +1689,30 @@ def positive_integer(value):
     return number
 
 
-def daily_fiscal_date_range():
-    """Import the fiscal week containing yesterday, through yesterday inclusive."""
-    yesterday = date.today() - timedelta(days=1)
-    with DatabaseConnection() as db:
-        db.execute(
-            """
-            SELECT date
-            FROM core.calendar
-            WHERE (year, period, week) = (
-                SELECT year, period, week FROM core.calendar WHERE date = %s
-            ) AND date <= %s
-            ORDER BY date
-            """,
-            (yesterday, yesterday),
-        )
-        dates = sorted({pd.Timestamp(row["date"]).date() for row in db.fetchall()})
-    if not dates or dates[-1] != yesterday:
-        raise ValueError(f"No core.calendar fiscal week for yesterday ({yesterday})")
-    if len(dates) != (yesterday - dates[0]).days + 1:
-        raise ValueError("The fiscal week in core.calendar contains missing dates")
-    return dates[0], yesterday
-
-
 def build_parser():
-    parser = argparse.ArgumentParser(description="Sync R365 daily or weekly tables.")
-    modes = parser.add_subparsers(dest="mode", required=True)
-    modes.add_parser("daily", help="Sync yesterday's fiscal week through yesterday.")
-    modes.add_parser("weekly", help="Refresh reference tables.")
-    bulk = modes.add_parser("bulk", help="Import daily tables by fiscal calendar.")
-    bulk.add_argument(
-        "--tables", nargs="+", required=True,
-        choices=DAILY_TABLES,
-        help="Tables to import; sales and vendor invoices include their related detail tables.",
-    )
-    bulk.add_argument("--year", type=positive_integer, required=True, help="Fiscal year.")
-    bulk.add_argument(
-        "--period", type=positive_integer, nargs="+", required=True,
-        help="One or more fiscal periods from core.calendar.",
-    )
-    bulk.add_argument(
-        "--week", type=positive_integer,
-        help="Week within the fiscal period (1–4, or 5 when present in core.calendar).",
-    )
+    parser = argparse.ArgumentParser(description="Sync R365 changes or bulk business dates.")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--daily", nargs="?", const=True, type=date.fromisoformat,
+                       metavar="YYYY-MM-DD", help="Sync changes yesterday (or on the supplied date).")
+    modes.add_argument("--week", "--weekly", action="store_true",
+                       help="Sync each day from Wednesday through yesterday.")
+    modes.add_argument("--bulk", action="store_true", help="Import dated tables by business date.")
+    parser.add_argument("--business-date", type=date.fromisoformat, metavar="YYYY-MM-DD",
+                        help="Single business date for --bulk; alternative to fiscal selections.")
+    parser.add_argument("-y", "--year", type=positive_integer, help="Fiscal year for bulk import.")
+    parser.add_argument("-p", "--period", type=positive_integer, nargs="+", help="Fiscal periods (default: whole year).")
+    parser.add_argument("-w", "--fiscal-week", type=positive_integer, help="Week within one fiscal period.")
+    parser.add_argument("--tables", "--sync", nargs="+",
+                        choices=[*DAILY_TABLES, *REFERENCE_TABLES, "sales_details", "sales_tickets", "all"],
+                        help="Endpoints to sync; sales selections include all related sales tables.")
     return parser
 
 
+DATED_LABOR_TABLES = ("labor_punches", "payroll_summaries", "sales_analytics")
+
+
 DAILY_TABLES = (
-    "daily_sales", "inventory_counts", "transactions", "vendor_invoices",
+    "daily_sales", "inventory_counts", "transactions", "vendor_invoices", *DATED_LABOR_TABLES,
     # "invoices",  # Accounting invoice sync retained for future use.
 )
 
@@ -1526,6 +1720,8 @@ DAILY_TABLES = (
 def sync_daily_tables(client, start, end, tables=DAILY_TABLES):
     """Sync dated records and their children using inclusive record dates."""
     print(f"Syncing daily tables from {start} through {end}.")
+    if any(table in tables for table in DATED_LABOR_TABLES):
+        sync_dated_labor(client, start, end, tables)
     if "daily_sales" in tables:
         sync_daily_sales(client, business_date_start=start, business_date_end=end)
     if "inventory_counts" in tables:
@@ -1543,10 +1739,19 @@ def sync_daily_tables(client, start, end, tables=DAILY_TABLES):
         sync_vendor_invoices(client, start, end)
 
 
-def sync_weekly_tables(client):
-    """Refresh reference data; creation/modification dates do not make it daily data."""
-    locations = r365_locations(client)
-    write_to_db(locations, "locations", "r365")
+REFERENCE_TABLES = (
+    "locations", "units_of_measure", "item_categories", "gl_accounts", "purchase_items",
+    "vendors", "vendor_items", "jobs", "employees", "users",
+)
+
+
+def sync_weekly_tables(client, tables=REFERENCE_TABLES):
+    """Refresh selected reference endpoints once, independently of the date range."""
+    locations = None
+    if "locations" in tables or "employees" in tables:
+        locations = r365_locations(client)
+    if "locations" in tables:
+        write_to_db(locations, "locations", "r365")
     for table, fetch in (
         ("units_of_measure", r365_units_of_measure),
         ("item_categories", r365_item_categories),
@@ -1554,38 +1759,115 @@ def sync_weekly_tables(client):
         ("purchase_items", r365_purchase_items),
         ("vendors", r365_vendors),
     ):
-        write_to_db(fetch(client), table, "r365")
-    sync_vendor_items(client, full_download=True)
-    # Labor endpoints require both boundaries to retrieve more than one day.
-    # Use the full representable date history through today for reference refreshes.
+        if table in tables:
+            write_to_db(fetch(client), table, "r365")
+    if "vendor_items" in tables:
+        sync_vendor_items(client, full_download=True)
+    # Reference endpoints require both boundaries to retrieve their full history.
     start, end = date.min.isoformat(), date.today().isoformat()
-    sync_jobs(client, start, end)
-    sync_employees(client, locations["id"].to_list(), start, end)
-    sync_users(client)
+    if "jobs" in tables:
+        sync_jobs(client, start, end)
+    if "employees" in tables:
+        sync_employees(client, locations["id"].to_list(), start, end)
+    if "users" in tables:
+        sync_users(client)
+
+
+BULK_TABLES = ("daily_sales", "transactions", "vendor_invoices", *DATED_LABOR_TABLES)
+
+
+def modified_day_bounds(day):
+    """Cover the entire selected day in the runtime's local timezone."""
+    start = datetime.combine(day, datetime.min.time()).astimezone()
+    end = datetime.combine(day, datetime.max.time()).astimezone()
+    return {"modified_on_start": start.isoformat(), "modified_on_end": end.isoformat()}
+
+
+def sync_modified_tables(client, day, tables, location_ids=None):
+    dates = modified_day_bounds(day)
+    print(f"Syncing changes on {day}: {dates['modified_on_start']} through {dates['modified_on_end']}.")
+    for table, fetch in (
+        ("locations", r365_locations), ("units_of_measure", r365_units_of_measure),
+        ("item_categories", r365_item_categories), ("gl_accounts", r365_gl_accounts),
+        ("purchase_items", r365_purchase_items), ("vendors", r365_vendors),
+        ("inventory_counts", r365_inventory_counts),
+    ):
+        if table in tables:
+            write_to_db(fetch(client, **dates), table, "r365")
+    if "vendor_items" in tables:
+        sync_vendor_items(client, **dates)
+    # Labor endpoints use inclusive calendar dates, not date-time filters.
+    if "jobs" in tables:
+        sync_jobs(client, day.isoformat(), day.isoformat())
+    if "employees" in tables and location_ids:
+        sync_employees(client, location_ids, day.isoformat(), day.isoformat())
+    if "users" in tables:
+        sync_users(client, **dates)
+    if "transactions" in tables:
+        write_to_db(r365_transactions(client, location_ids or [], **dates), "transactions", "r365")
+    if "vendor_invoices" in tables:
+        sync_vendor_invoices(client, **dates)
+    if any(table in tables for table in DATED_LABOR_TABLES):
+        sync_dated_labor(client, day, day, tables, modified_dates=dates)
+    if "daily_sales" in tables:
+        print("Daily sales supports businessDate only; older sales changes require a bulk rerun.")
+        sync_daily_sales(client, business_date_start=day, business_date_end=day)
 
 
 def main(argv=None):
     parser = build_parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in {"daily", "weekly", "bulk"}:
+        argv[0] = "--" + argv[0]
+    # Preserve numeric --week in existing fiscal bulk commands.
+    for i, arg in enumerate(argv[:-1]):
+        if arg == "--week" and argv[i + 1].isdigit():
+            argv[i] = "--fiscal-week"
     args = parser.parse_args(argv)
-    if args.mode == "bulk":
-        if args.week is not None and len(set(args.period)) != 1:
-            parser.error("--week requires exactly one fiscal period")
-        try:
-            ranges = fiscal_date_ranges(args.year, args.period, args.week)
-        except ValueError as exc:
-            parser.error(str(exc))
-    elif args.mode == "daily":
-        try:
-            ranges = [daily_fiscal_date_range()]
-        except ValueError as exc:
-            parser.error(str(exc))
+    bulk = args.bulk or (args.period is not None and args.daily is None and not args.week)
+    if bulk:
+        if args.business_date is not None:
+            if args.year is not None or args.period is not None or args.fiscal_week is not None:
+                parser.error("--business-date cannot be combined with fiscal selections")
+        elif args.year is None:
+            parser.error("--bulk requires --year or --business-date")
+        if args.fiscal_week is not None and (not args.period or len(set(args.period)) != 1):
+            parser.error("-w/--fiscal-week requires exactly one fiscal period")
+    elif args.daily is None and not args.week:
+        parser.error("choose --daily, --week, or --bulk")
+    elif any(value is not None for value in (args.year, args.period, args.fiscal_week, args.business_date)):
+        parser.error("business-date and fiscal selections require --bulk")
+    tables = args.tables or (list(BULK_TABLES) if bulk else [*REFERENCE_TABLES, *DAILY_TABLES])
+    if "all" in tables:
+        tables = list(BULK_TABLES) if bulk else [*REFERENCE_TABLES, *DAILY_TABLES]
+    tables = list(dict.fromkeys("daily_sales" if t in ("sales_details", "sales_tickets") else t for t in tables))
+    if bulk and any(t not in DAILY_TABLES for t in tables):
+        parser.error("--bulk accepts dated tables only; reference tables use --daily or --week")
+    try:
+        if bulk:
+            ranges = ([(args.business_date, args.business_date)] if args.business_date else
+                      fiscal_date_ranges(args.year, args.period, args.fiscal_week))
+        elif args.week:
+            ranges = [fiscal_calendar.fiscal_week_to_date(
+                today=date.today(), connection_factory=DatabaseConnection,
+            )]
+        else:
+            ranges = [fiscal_calendar.daily_date_range(None if args.daily is True else args.daily)]
+    except ValueError as exc:
+        parser.error(str(exc))
     client = R365Client()
-    if args.mode == "weekly":
-        sync_weekly_tables(client)
-    else:
-        for start, end in ranges:
-            tables = args.tables if args.mode == "bulk" else DAILY_TABLES
-            sync_daily_tables(client, start, end, tables)
+    # Scoping must include unchanged locations, even when their delta is empty.
+    location_ids = None
+    if not bulk and any(t in tables for t in ("employees", "transactions")):
+        location_ids = [row["id"] for row in get_locations(client)]
+    for start, end in ranges:
+        day = start
+        while day <= end:
+            if bulk:
+                sync_daily_tables(client, day, day, tables)
+            else:
+                sync_modified_tables(client, day, tables, location_ids)
+            day += timedelta(days=1)
 
 
 if __name__ == "__main__":

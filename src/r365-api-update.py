@@ -20,6 +20,7 @@ from db_utils.r365_importers import (
     get_sales_analytics,
 )
 from db_utils.dbconnect import DatabaseConnection
+from db_utils.r365_csv_importers import get_pos_items_csv, get_menu_items_csv
 from db_utils import fiscal_calendar
 from psycopg2 import sql
 from datetime import date, datetime, timedelta, timezone
@@ -1703,7 +1704,7 @@ def build_parser():
     parser.add_argument("-p", "--period", type=positive_integer, nargs="+", help="Fiscal periods (default: whole year).")
     parser.add_argument("-w", "--fiscal-week", type=positive_integer, help="Week within one fiscal period.")
     parser.add_argument("--tables", "--sync", nargs="+",
-                        choices=[*DAILY_TABLES, *REFERENCE_TABLES, "sales_details", "sales_tickets", "all"],
+                        choices=[*DAILY_TABLES, *REFERENCE_TABLES, *CSV_TABLES, "sales_details", "sales_tickets", "all"],
                         help="Endpoints to sync; sales selections include all related sales tables.")
     return parser
 
@@ -1743,6 +1744,30 @@ REFERENCE_TABLES = (
     "locations", "units_of_measure", "item_categories", "gl_accounts", "purchase_items",
     "vendors", "vendor_items", "jobs", "employees", "users",
 )
+
+
+CSV_TABLES = ("pos_items", "menu_items")
+
+
+def load_csv_tables(tables):
+    """Validate all selected exports before writing any of them."""
+    return {
+        table: fetch() for table, fetch in (
+            ("pos_items", get_pos_items_csv), ("menu_items", get_menu_items_csv),
+        ) if table in tables
+    }
+
+
+def sync_csv_tables(frames):
+    """Write normalized CSV/API frames together using the source UUIDs."""
+    if not frames:
+        return
+    counts = {}
+    with DatabaseConnection() as db:
+        for table, frame in frames.items():
+            counts[table] = write_to_db(frame, table, "r365", db=db)
+    for table, count in counts.items():
+        print(f"r365.{table}: fetched={len(frames[table]):,}, upserted={count:,}.")
 
 
 def sync_weekly_tables(client, tables=REFERENCE_TABLES):
@@ -1837,12 +1862,19 @@ def main(argv=None):
         parser.error("choose --daily, --week, or --bulk")
     elif any(value is not None for value in (args.year, args.period, args.fiscal_week, args.business_date)):
         parser.error("business-date and fiscal selections require --bulk")
-    tables = args.tables or (list(BULK_TABLES) if bulk else [*REFERENCE_TABLES, *DAILY_TABLES])
+    defaults = (list(BULK_TABLES) if bulk else
+                [*REFERENCE_TABLES, *DAILY_TABLES, *(CSV_TABLES if args.week else ())])
+    tables = args.tables or defaults
     if "all" in tables:
-        tables = list(BULK_TABLES) if bulk else [*REFERENCE_TABLES, *DAILY_TABLES]
+        tables = defaults
     tables = list(dict.fromkeys("daily_sales" if t in ("sales_details", "sales_tickets") else t for t in tables))
     if bulk and any(t not in DAILY_TABLES for t in tables):
         parser.error("--bulk accepts dated tables only; reference tables use --daily or --week")
+    frames = load_csv_tables(tables) if any(t in CSV_TABLES for t in tables) else {}
+    tables = [table for table in tables if table not in CSV_TABLES]
+    if not tables:
+        sync_csv_tables(frames)
+        return
     try:
         if bulk:
             ranges = ([(args.business_date, args.business_date)] if args.business_date else
@@ -1855,6 +1887,7 @@ def main(argv=None):
             ranges = [fiscal_calendar.daily_date_range(None if args.daily is True else args.daily)]
     except ValueError as exc:
         parser.error(str(exc))
+    sync_csv_tables(frames)
     client = R365Client()
     # Scoping must include unchanged locations, even when their delta is empty.
     location_ids = None

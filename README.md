@@ -8,6 +8,8 @@ Collection of utilities and scripts used to manage and update DataMart tables
 * Product Mix.csv
 * RecipeItems.csv
 * ingredients.csv
+* PosItems.csv
+* MenuItems.csv
 * Receiving by Purchased Item.csv (item specific)
 
 ### Toast Files:
@@ -78,6 +80,57 @@ from the same response. Vendor invoices include `vendor_invoice_details`.
 bulk; it is excluded from the default. Reference tables are rejected in bulk.
 `--tables all` selects the defaults for the chosen mode. Existing reference data
 is retained; bulk does not populate missing reference tables on a fresh database.
+
+### R365 POS and menu CSV imports
+
+Apply `db_utils/schema/r365_pos_menu_items.sql` once to create `r365.pos_items`
+and `r365.menu_items` before the first import. Download fresh exports to
+`downloads/PosItems.csv` and `downloads/MenuItems.csv`; these paths resolve from
+the repository directory regardless of the current working directory.
+
+`--week` / `--weekly` includes both CSV tables by default (also with `--tables all`).
+They are imported once per invocation, independently of the API date filters.
+Daily defaults remain API-only. To import only the CSV tables, or just one:
+
+```sh
+.venv/bin/python -m src.r365-api-update --week --tables pos_items menu_items
+.venv/bin/python -m src.r365-api-update --week --tables pos_items
+```
+
+CSV-only selections require no API calls or fiscal-calendar lookup. Explicit
+CSV selections also work with `--daily` and always import the entire file;
+bulk rejects CSV tables. An explicit `--tables` list imports only selected tables.
+Files are not downloaded automatically and old exports will reapply old values.
+
+Both tables upsert by the exported `Id` UUID. POS `PosItemId` is a separate,
+unique `bigint`, matching the type in `r365.sales_details`:
+
+```sql
+SELECT sales.*, pos.pos_item_name, pos.menu_item
+FROM r365.sales_details AS sales
+LEFT JOIN r365.pos_items AS pos ON pos.pos_item_id = sales.pos_item_id;
+```
+
+All exported columns are retained with explicit snake-case names. POS `Menu Item`
+is stored as the name supplied by the export, not inferred as a menu UUID.
+Menu `Recipe Id` is a nullable UUID. Identifiers such as PLU, SKU, and barcode
+remain text to preserve leading zeroes. Yes/No flags become booleans; blank fields
+become SQL NULL; export timestamps remain text because no timezone is supplied.
+
+Selected files are validated before writes or API requests. Missing files,
+changed headers, malformed values, or duplicate IDs fail the import; duplicate
+numeric POS IDs also fail to prevent ambiguous sales joins. Both selected tables
+commit together. Header-only files leave existing data unchanged, and rows absent
+from a later export are retained. Existing public reporting tables are unaffected.
+CSV retrieval/normalization lives in `db_utils/r365_csv_importers.py`, separate
+from `sync_csv_tables`, so future API loaders can supply the same normalized frames.
+
+### R365 API date filters
+
+For concept-aware links between Toast and R365 menu IDs, see
+[menu-item mapping](docs/menu-item-mapping.md). Preview with
+`.venv/bin/python -m src.menu-item-map`; use `--write` after applying its schema
+to insert unique matches while preserving existing mappings.
 
 Bulk uses the documented business-date filters for
 [transactions](https://docs.restaurant365.com/apidocs/public-v1-accounting-transactions)

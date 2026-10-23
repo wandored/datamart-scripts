@@ -40,6 +40,7 @@ Call Server
 Candles
 Char
 Chardonnay
+Cherry
 Chilled
 Chilled Neat
 Chopped
@@ -86,6 +87,7 @@ Grapefruit
 Grenadine
 Grilled
 Hi-Ball Glass
+Hot Plate
 Ice
 In & Out
 In Dirty

@@ -1,6 +1,7 @@
 # datamart-scripts
 
 This repository contains Python data integration, ETL, reporting, and analytics code primarily involving Toast, Restaurant365 (R365), PostgreSQL, pandas, and SQLAlchemy.
+This repository is going to be deprecated and replaced with multiple new repositories including datamart-ingestion.
 
 ## Runtime and Stack
 

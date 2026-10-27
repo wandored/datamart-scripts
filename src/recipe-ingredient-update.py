@@ -106,7 +106,7 @@ def calculate_menu_cost(row):
 
 
 def get_menu_recipe():
-    df = pd.read_csv("./downloads/MenuItems_R365.csv")
+    df = pd.read_csv("./downloads/MenuItems.csv")
     # drop all rows where Category 1 is null
     df = df.dropna(subset=["Category 1"])
     # keep only Name and Recipe columns

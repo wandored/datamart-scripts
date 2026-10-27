@@ -1,4 +1,4 @@
-# Import MenuItems_R367.csv, remove unnecessary columns, and update the menu_item table in the database.
+# Import MenuItems.csv, remove unnecessary columns, and update the menu_item table in the database.
 import pandas as pd
 
 from db_utils.dbconnect import DatabaseConnection
@@ -162,5 +162,5 @@ def update_menu_item_table(csv_path: str):
 
 
 if __name__ == "__main__":
-    update_menu_item_table("downloads/MenuItems_R365.csv")
+    update_menu_item_table("downloads/MenuItems.csv")
     # update_toast_r365_menu_item_map()

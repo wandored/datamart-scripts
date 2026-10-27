@@ -518,34 +518,44 @@ def require_vendor_invoice_fields(row, fields, record_type):
 def r365_vendor_invoices(client=None, invoices=None):
     if invoices is None:
         invoices = get_today_vendor_invoices(client)
-    records = []
+    records_by_id = {}
+    duplicate_count = 0
     for row in invoices:
         require_vendor_invoice_fields(
             row, ("id", "amount", "date", "documentDate"), "Vendor invoice"
         )
-        records.append(
-            {
-                "id": convert_uuid(row["id"]),
-                "transaction_type": row.get("transactionType"),
-                "name": row.get("name"),
-                "number": row.get("number"),
-                "amount": row["amount"],
-                "is_paid": row.get("isPaid"),
-                "credit_expected": row.get("creditExpected"),
-                "comment": row.get("comment"),
-                "status": row.get("status"),
-                "date": row["date"],
-                "document_date": row["documentDate"],
-                "due_date": row.get("dueDate"),
-                "location_id": convert_uuid((row.get("location") or {}).get("id")),
-                "vendor_id": convert_uuid((row.get("vendor") or {}).get("id")),
-                "purchase_order_id": convert_uuid(
-                    (row.get("purchaseOrder") or {}).get("id")
-                ),
-            }
-        )
+        invoice_id = convert_uuid(row["id"])
+        record = {
+            "id": invoice_id,
+            "transaction_type": row.get("transactionType"),
+            "name": row.get("name"),
+            "number": row.get("number"),
+            "amount": row["amount"],
+            "is_paid": row.get("isPaid"),
+            "credit_expected": row.get("creditExpected"),
+            "comment": row.get("comment"),
+            "status": row.get("status"),
+            "date": row["date"],
+            "document_date": row["documentDate"],
+            "due_date": row.get("dueDate"),
+            "location_id": convert_uuid((row.get("location") or {}).get("id")),
+            "vendor_id": convert_uuid((row.get("vendor") or {}).get("id")),
+            "purchase_order_id": convert_uuid(
+                (row.get("purchaseOrder") or {}).get("id")
+            ),
+        }
+        if invoice_id in records_by_id:
+            if records_by_id[invoice_id] != record:
+                raise ValueError(f"Conflicting vendor invoice records for id {invoice_id}")
+            duplicate_count += 1
+            continue
+        records_by_id[invoice_id] = record
+    print(
+        f"Fetched {len(records_by_id) + duplicate_count:,} vendor invoices; "
+        f"collapsed {duplicate_count:,} exact duplicate IDs."
+    )
     return pd.DataFrame(
-        records,
+        list(records_by_id.values()),
         columns=[
             "id",
             "transaction_type",

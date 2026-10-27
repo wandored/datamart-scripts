@@ -101,6 +101,42 @@ class VendorInvoiceSyncTests(unittest.TestCase):
         self.assertEqual(headers.args[2][0][-3:], (None, None, None))
         self.assertEqual(details.args[2][0], (UUID(int=11), UUID(int=1), 0, None, None, 0, None, 0, None, None))
 
+    def test_repeated_invoice_across_pages_is_written_once(self):
+        self.client.request.side_effect = [
+            {"items": [invoice()], "nextLink": "/next"},
+            {"items": [invoice(), invoice(2)]},
+        ]
+        module.sync_vendor_invoices(self.client)
+
+        headers, details = self.execute.call_args_list
+        self.assertEqual(len(headers.args[2]), 2)
+        self.assertEqual(len(details.args[2]), 2)
+        self.assertIn(
+            "Fetched 3 vendor invoices; collapsed 1 exact duplicate IDs.",
+            self.output.getvalue(),
+        )
+        self.connection.commit.assert_called_once()
+
+    def test_conflicting_header_duplicate_fails_before_database(self):
+        for field, value in (("amount", 99), ("status", "Unapproved")):
+            with self.subTest(field=field):
+                self.client.request.return_value = {
+                    "items": [invoice(), invoice() | {field: value}],
+                }
+                with self.assertRaisesRegex(ValueError, "Conflicting vendor invoice records"):
+                    module.sync_vendor_invoices(self.client)
+        self.assertEqual(self.connect.call_count, 0)
+
+    def test_repeated_header_preserves_distinct_details(self):
+        repeated = invoice()
+        repeated["details"] = [repeated["details"][0] | {"id": str(UUID(int=12))}]
+        self.client.request.return_value = {"items": [invoice(), repeated]}
+        module.sync_vendor_invoices(self.client)
+
+        headers, details = self.execute.call_args_list
+        self.assertEqual(len(headers.args[2]), 1)
+        self.assertEqual(len(details.args[2]), 2)
+
     def test_exact_duplicate_vendor_invoice_details_are_collapsed(self):
         duplicate_invoice = invoice()
         duplicate_invoice["details"].append(duplicate_invoice["details"][0].copy())

@@ -20,7 +20,10 @@ from db_utils.r365_importers import (
     get_sales_analytics,
 )
 from db_utils.dbconnect import DatabaseConnection
-from db_utils.r365_csv_importers import get_pos_items_csv, get_menu_items_csv
+from db_utils.r365_csv_importers import (
+    get_pos_items_csv, get_menu_items_csv, get_recipe_items_csv, get_ingredients_csv,
+    INGREDIENT_KEYS,
+)
 from db_utils import fiscal_calendar
 from psycopg2 import sql
 from datetime import date, datetime, timedelta, timezone
@@ -1756,7 +1759,7 @@ REFERENCE_TABLES = (
 )
 
 
-CSV_TABLES = ("pos_items", "menu_items")
+CSV_TABLES = ("pos_items", "menu_items", "recipe_items", "ingredients")
 
 
 def load_csv_tables(tables):
@@ -1764,6 +1767,7 @@ def load_csv_tables(tables):
     return {
         table: fetch() for table, fetch in (
             ("pos_items", get_pos_items_csv), ("menu_items", get_menu_items_csv),
+            ("recipe_items", get_recipe_items_csv), ("ingredients", get_ingredients_csv),
         ) if table in tables
     }
 
@@ -1775,13 +1779,17 @@ def sync_csv_tables(frames):
     counts = {}
     with DatabaseConnection() as db:
         for table, frame in frames.items():
-            counts[table] = write_to_db(frame, table, "r365", db=db)
+            keys = {"conflict_columns": INGREDIENT_KEYS} if table == "ingredients" else {}
+            counts[table] = write_to_db(frame, table, "r365", db=db, **keys)
     for table, count in counts.items():
         print(f"r365.{table}: fetched={len(frames[table]):,}, upserted={count:,}.")
 
 
 def sync_weekly_tables(client, tables=REFERENCE_TABLES):
     """Refresh selected reference endpoints once, independently of the date range."""
+    recipe_items = get_recipe_items_csv()
+    ingredients = get_ingredients_csv()
+    sync_recipe_tables(recipe_items, ingredients)
     locations = None
     if "locations" in tables or "employees" in tables:
         locations = r365_locations(client)
@@ -1847,6 +1855,17 @@ def sync_modified_tables(client, day, tables, location_ids=None):
     if "daily_sales" in tables:
         print("Daily sales supports businessDate only; older sales changes require a bulk rerun.")
         sync_daily_sales(client, business_date_start=day, business_date_end=day)
+
+
+def sync_recipe_tables(recipe_items, ingredients):
+    """Upsert normalized recipe data independently of its CSV/API source."""
+    with DatabaseConnection() as db:
+        recipe_count = write_to_db(recipe_items, "recipe_items", "r365", db=db)
+        ingredient_count = write_to_db(
+            ingredients, "ingredients", "r365", db=db, conflict_columns=INGREDIENT_KEYS
+        )
+    print(f"Recipe items fetched/upserted={recipe_count:,}; "
+          f"ingredients fetched/upserted={ingredient_count:,}.")
 
 
 def main(argv=None):

@@ -88,7 +88,7 @@ and `r365.menu_items` before the first import. Download fresh exports to
 `downloads/PosItems.csv` and `downloads/MenuItems.csv`; these paths resolve from
 the repository directory regardless of the current working directory.
 
-`--week` / `--weekly` includes both CSV tables by default (also with `--tables all`).
+`--week` / `--weekly` includes all four CSV tables by default (also with `--tables all`).
 They are imported once per invocation, independently of the API date filters.
 Daily defaults remain API-only. To import only the CSV tables, or just one:
 
@@ -124,6 +124,27 @@ commit together. Header-only files leave existing data unchanged, and rows absen
 from a later export are retained. Existing public reporting tables are unaffected.
 CSV retrieval/normalization lives in `db_utils/r365_csv_importers.py`, separate
 from `sync_csv_tables`, so future API loaders can supply the same normalized frames.
+
+### R365 recipe and ingredient CSV imports
+
+Before the first weekly CSV import, apply `db_utils/schema/r365_recipes.sql`
+to create `r365.recipe_items` and `r365.ingredients`. Before each weekly run,
+download fresh exports to `downloads/RecipeItems.csv` and `downloads/ingredients.csv`
+(paths resolve relative to the repository). Use `--week --tables recipe_items ingredients` to import only these exports.
+Both files are validated before weekly writes or API requests; missing files,
+changed headers, invalid values, or duplicate keys fail the run. Header-only
+files are valid and leave stored rows unchanged. Files are not downloaded automatically,
+and reusing an old file reimports its old values.
+
+Recipe items upsert by the exported UUID. Ingredients have no exported ID and
+upsert by `(recipe, item, uofm)`; quantities and other fields update in place.
+All exported fields are retained with explicit snake-case column names; dates
+remain export text because the files provide no timezone. Both tables commit
+together. Rows absent from subsequent files remain stored, including old ingredient
+keys after a rename or unit change. Existing public reporting tables are unchanged.
+`db_utils/r365_csv_importers.py` handles CSV retrieval and normalization separately
+from `sync_recipe_tables`, allowing future API adapters to supply the same frames.
+When ingredient API IDs become available, their key mapping will need a migration.
 
 ### R365 API date filters
 

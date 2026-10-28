@@ -167,6 +167,7 @@ class SyncCliTests(unittest.TestCase):
         names = ["r365_locations", "r365_units_of_measure", "r365_item_categories",
                  "r365_gl_accounts", "r365_purchase_items", "r365_vendors",
                  "sync_vendor_items", "sync_jobs", "sync_employees", "sync_users",
+                 "get_recipe_items_csv", "get_ingredients_csv", "sync_recipe_tables",
                  "write_to_db", "sync_daily_tables", "DatabaseConnection", "R365Client"]
         with ExitStack() as stack:
             mocks = {name: stack.enter_context(patch.object(module, name)) for name in names}
@@ -178,6 +179,10 @@ class SyncCliTests(unittest.TestCase):
                 client, ["location"], "0001-01-01", date.today().isoformat())
             mocks["sync_vendor_items"].assert_called_once_with(client, full_download=True)
             mocks["sync_users"].assert_called_once_with(client)
+            mocks["sync_recipe_tables"].assert_called_once_with(
+                mocks["get_recipe_items_csv"].return_value,
+                mocks["get_ingredients_csv"].return_value,
+            )
             self.assertEqual([call.args[1] for call in mocks["write_to_db"].call_args_list],
                              ["locations", "units_of_measure", "item_categories",
                               "gl_accounts", "purchase_items", "vendors"])

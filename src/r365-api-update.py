@@ -1785,11 +1785,13 @@ def sync_csv_tables(frames):
         print(f"r365.{table}: fetched={len(frames[table]):,}, upserted={count:,}.")
 
 
-def sync_weekly_tables(client, tables=REFERENCE_TABLES):
+def sync_weekly_tables(client, tables=None):
     """Refresh selected reference endpoints once, independently of the date range."""
-    recipe_items = get_recipe_items_csv()
-    ingredients = get_ingredients_csv()
-    sync_recipe_tables(recipe_items, ingredients)
+    if tables is None:
+        recipe_items = get_recipe_items_csv()
+        ingredients = get_ingredients_csv()
+        sync_recipe_tables(recipe_items, ingredients)
+        tables = REFERENCE_TABLES
     locations = None
     if "locations" in tables or "employees" in tables:
         locations = r365_locations(client)

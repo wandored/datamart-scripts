@@ -417,3 +417,7 @@ This ensures:
 - consistent database connections
 - automatic view recreation
 - and a modular, maintainable workflow
+
+The optional [R365 resource dispatcher](docs/r365-api-update.md) and table modules
+are available through `.venv/bin/python -m src.r365_sync.dispatcher`.
+The primary commands above retain their existing behavior.

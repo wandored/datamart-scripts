@@ -91,3 +91,25 @@ class RecipeCsvTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 module.sync_recipe_tables(object(), object())
             self.assertIs(connection.return_value.__exit__.call_args.args[0], RuntimeError)
+
+    def test_recipe_only_cli_uses_csv_path_without_api_or_calendar(self):
+        frames = {"recipe_items": pd.DataFrame(), "ingredients": pd.DataFrame()}
+        with patch.object(module, "get_recipe_items_csv", return_value=frames["recipe_items"]), \
+                patch.object(module, "get_ingredients_csv", return_value=frames["ingredients"]), \
+                patch.object(module, "sync_csv_tables") as sync, \
+                patch.object(module, "R365Client") as client, \
+                patch.object(module.fiscal_calendar, "fiscal_week_to_date") as calendar:
+            module.main(["--week", "--tables", "recipe_items", "ingredients"])
+            sync.assert_called_once_with(frames)
+            client.assert_not_called()
+            calendar.assert_not_called()
+
+    def test_csv_pipeline_uses_ingredient_composite_key_in_shared_transaction(self):
+        frames = {"recipe_items": [1], "ingredients": [2]}
+        with patch.object(module, "DatabaseConnection") as connection, \
+                patch.object(module, "write_to_db", return_value=1) as write:
+            module.sync_csv_tables(frames)
+            db = connection.return_value.__enter__.return_value
+            self.assertEqual(write.call_args_list[0].kwargs, {"db": db})
+            self.assertEqual(write.call_args_list[1].kwargs,
+                             {"db": db, "conflict_columns": INGREDIENT_KEYS})
